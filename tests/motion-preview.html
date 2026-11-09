@@ -1,0 +1,37 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><base href="/"><meta name="viewport" content="width=device-width,initial-scale=1"><title>机械运动验证</title><style>body{margin:0;background:#151915;color:#ddd;font:12px sans-serif}nav{position:fixed;top:8px;left:8px;z-index:2;background:#152018d9;padding:8px;border-radius:5px}nav a,nav button{margin:3px;color:#ddd}nav button{background:#32452d;border:1px solid #87936b;padding:7px}#scene{position:absolute;inset:0;display:grid;place-items:center}canvas{width:min(100vw,56.25vh);height:auto;display:block}</style><div id="scene"></div><nav><a href="/tests/motion-preview.html?t=.95">吸附</a><a href="/tests/motion-preview.html?t=1.9">搬运</a><a href="/tests/motion-preview.html?t=6">雕刻</a><a href="/tests/motion-preview.html?t=12.45">放料</a><a href="/tests/motion-preview.html?t=14.95">滑槽</a><a href="/tests/motion-preview.html?t=15.65">收料</a><button id="record">录制完整生产循环</button><button id="audit">检查连续生产</button><span id="status"></span></nav><textarea id="recording" hidden></textarea><textarea id="frame" hidden></textarea><div id="exports" hidden></div><output id="audit-result" hidden></output><video id="verified-preview" src="/PREVIEW-approved-1080x1920.webm" preload="metadata" hidden></video><output id="video-info" hidden></output><script type="module">
+import {LaserScene} from './photo-scene.js';import {makeAvatar} from './art.js';import {getToolPose,TOOL_TIMING} from './scan-path.js';
+function exportChunks(name,data){const host=document.getElementById('exports');host.querySelectorAll(`[data-export="${name}"]`).forEach(el=>el.remove());for(let i=0;i<data.length;i+=50000){const el=document.createElement('textarea');el.dataset.export=name;el.value=data.slice(i,i+50000);host.append(el);}}
+const video=document.getElementById('verified-preview');function videoInfo(){document.getElementById('video-info').textContent=JSON.stringify({width:video.videoWidth,height:video.videoHeight,duration:video.duration});}video.addEventListener('loadedmetadata',videoInfo);if(video.readyState>=1)videoInfo();
+const scene=new LaserScene(document.getElementById('scene'));
+const portrait=makeAvatar('运动验证',1);scene.prepare(portrait);
+const elapsed=Number(new URLSearchParams(location.search).get('t')||6);
+const status=document.getElementById('status');
+function render(t){scene.updateEngraving(t);scene.update(0,t);scene.canvas.dataset.diagnostics=JSON.stringify(scene.diagnostics());status.textContent=`${getToolPose(t).phase} / ${t}s`;}
+const sheet=document.createElement('canvas');sheet.width=1500;sheet.height=1080;const sc=sheet.getContext('2d');
+[.95,1.9,6,12.45,14.95,15.65].forEach((t,i)=>{render(t);const x=i%3*500,y=Math.floor(i/3)*540;sc.fillStyle='#141a15';sc.fillRect(x,y,500,540);sc.fillStyle='#e8ddba';sc.font='18px sans-serif';sc.fillText(`${t}s · ${scene.getState().phase}`,x+10,y+23);const scale=1080/941;sc.drawImage(scene.canvas,155*scale,650*scale,735*scale,750*scale,x,y+30,500,510);});exportChunks('sheet',sheet.toDataURL('image/png'));
+render(elapsed);document.getElementById('frame').value=scene.canvas.toDataURL('image/png');exportChunks('frame',document.getElementById('frame').value);
+document.getElementById('audit').onclick=()=>{
+ const errors=[];const assert=(v,m)=>{if(!v)errors.push(m);};scene.reset();
+ for(let cycle=0;cycle<24;cycle++){
+  assert(scene.prepare(portrait),`cycle ${cycle} should begin`);
+  for(const t of [.95,1.9,2.7,4.2,6,8.95,10.55,11.2,12.45,14.5,15.3,15.65,16.2]){
+   render(t);const d=scene.diagnostics();assert(d.stockUnique,`duplicate ${cycle}/${t}`);assert(d.owners.length===cycle+4,`stock count ${cycle}/${t}`);
+  }
+  scene.complete();assert(scene.collectorCount===cycle+1,`collector ${cycle}`);
+ }
+ assert(!scene.canStart(),'full tray should block');assert(!scene.prepare(portrait),'full tray must refuse new material');
+ scene.clearCollector();assert(scene.collectorCount===0&&scene.canStart(),'cleared tray should allow start');
+ scene.prepare(portrait);render(15.3);const before=scene.outgoingPose(scene.getState()).pose;assert(scene.clearCollector()===null,'falling stock delays manual collection');const after=scene.outgoingPose(scene.getState()).pose;assert(before.x===after.x&&before.y===after.y,'clearing must not teleport falling stock');scene.complete();assert(scene.collectorCount===0,'deferred collection completes');
+ document.getElementById('audit-result').textContent=JSON.stringify({passed:errors.length===0,cycles:25,errors});scene.reset();scene.prepare(portrait);render(elapsed);
+};
+document.getElementById('record').onclick=()=>{
+ scene.reset();scene.prepare(portrait);const stream=scene.canvas.captureStream(30),chunks=[];
+ const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9')?'video/webm;codecs=vp9':'video/webm';
+ const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5000000});
+ recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+ recorder.onstop=async()=>{const reader=new FileReader();reader.onload=()=>{document.getElementById('recording').value=reader.result;exportChunks('video',reader.result);status.textContent='录制完成';stream.getTracks().forEach(t=>t.stop());};reader.readAsDataURL(new Blob(chunks,{type:mime}));};
+ recorder.start();const start=performance.now();let previous=start,cycle=0;
+ function frame(now){const seconds=(now-start)/1000;if(seconds>=TOOL_TIMING.total*(cycle+1)&&cycle<1){render(TOOL_TIMING.total);scene.complete();scene.prepare(portrait);cycle++;}const t=Math.min(TOOL_TIMING.total,seconds-cycle*TOOL_TIMING.total);scene.updateEngraving(t);scene.update((now-previous)/1000,seconds);previous=now;if(seconds<TOOL_TIMING.total*2)requestAnimationFrame(frame);else recorder.stop();}
+ requestAnimationFrame(frame);status.textContent='录制中…';
+};
+</script></html>
