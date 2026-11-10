@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  getToolPose, getProductionState, getRasterSample, getImpact,
+  getToolPose, getProductionState, getRasterSample, getImpact, getHeadImpact,
   PRINT_SURFACE, LASER_ORIGIN, TOOL_TIMING as T, TOOL_PARK, RASTER_ROWS,
+  MECHANICAL_ROWS, SUBSCAN_LINES, RASTER_STROKE_FRACTION,
 } from './scan-path.js';
 import { HANDLING_TIMING, HANDLING_PHASES } from './handling-cycle.js';
 
@@ -14,13 +15,19 @@ const parked = pose => {
   assert.equal(pose.laser, false);
 };
 
-test('laser and handling share the 16.2 second clock and four second raster window', () => {
+test('laser and handling share the production clock and the reserved showcase window', () => {
   assert.equal(T, HANDLING_TIMING);
-  assert.equal(T.total, 16.2);
-  assert.ok(Math.abs(T.scanEnd - T.scanStart - 4) < epsilon);
+  assert.equal(T.total, 18);
+  assert.ok(T.scanEnd > T.scanStart);
+  const scan = HANDLING_PHASES.find(p => p.name === 'scan');
+  assert.equal(T.scanStart, scan.start);
+  assert.equal(T.scanEnd, scan.end);
+  assert.equal(T.displayEnd - T.displayStart, 4.5);
   assert.ok(T.headLoadStart >= T.clampEnd);
   assert.ok(T.headReturnEnd <= T.unclampStart);
-  assert.equal(RASTER_ROWS, 14);
+  assert.equal(RASTER_ROWS, 64);
+  assert.equal(MECHANICAL_ROWS, 16);
+  assert.equal(SUBSCAN_LINES, 4);
 });
 
 test('illuminated impacts use the current laser origin and stay inside the stock', () => {
@@ -30,44 +37,85 @@ test('illuminated impacts use the current laser origin and stay inside the stock
     const pose = getToolPose(t);
     if (!pose.laser) continue;
     illuminated++;
-    const impact = { x: LASER_ORIGIN.x + pose.x, y: LASER_ORIGIN.y + pose.y };
+    const impact = pose.impact;
     const expected = getImpact(pose.raster);
     assert.ok(Math.hypot(impact.x - expected.x, impact.y - expected.y) < epsilon);
     const dx = impact.x - p.x, dy = impact.y - p.y;
     const u = (dx * c + dy * s) / p.rx, v = (-dx * s + dy * c) / p.ry;
     assert.ok(u * u + v * v <= 1 + epsilon, `outside stock at ${t}`);
     assert.equal(pose.lift, 0);
+    const head={x:LASER_ORIGIN.x+pose.x,y:LASER_ORIGIN.y+pose.y};
+    assert.ok(Math.abs(impact.x-head.x)<=2&&Math.abs(impact.y-head.y)<=1);
+    assert.ok(pose.microImpacts.length>=1&&pose.microImpacts.length<=SUBSCAN_LINES);
+    for(const micro of pose.microImpacts){
+      const dx=micro.x-p.x,dy=micro.y-p.y;
+      const u=(dx*c+dy*s)/p.rx,v=(-dx*s+dy*c)/p.ry;
+      assert.ok(u*u+v*v<=1+epsilon);
+      assert.ok(Math.abs(micro.x-head.x)<=2&&Math.abs(micro.y-head.y)<=1);
+    }
     assert.ok(t >= T.scanStart && t < T.scanEnd);
   }
-  assert.ok(illuminated > 3000, 'test must exercise the illuminated raster');
+  assert.ok(illuminated > (T.scanEnd - T.scanStart) * 1000 * .75, 'test must exercise the illuminated raster');
 });
 
-test('fourteen alternating rows advance in order with the beam off during row feed', () => {
+test('sixteen smooth mechanical passes engrave sixty-four fine local tracks in order', () => {
   const duration = T.scanEnd - T.scanStart;
   let previousV = -Infinity;
-  for (let row = 0; row < RASTER_ROWS; row++) {
-    const sample = getRasterSample((row + .42) / RASTER_ROWS);
-    const pose = getToolPose(T.scanStart + duration * (row + .42) / RASTER_ROWS);
-    assert.equal(sample.row, row);
-    assert.equal(pose.raster.row, row);
-    assert.equal(sample.direction, row % 2 === 0 ? 1 : -1);
+  const seen=new Set();
+  for (let pass = 0; pass < MECHANICAL_ROWS; pass++) {
+    const sample = getRasterSample((pass + .42) / MECHANICAL_ROWS);
+    const pose = getToolPose(T.scanStart + duration * (pass + .42) / MECHANICAL_ROWS);
+    assert.equal(sample.pass, pass);
+    assert.equal(pose.raster.row, pass*SUBSCAN_LINES);
+    assert.equal(sample.direction, pass % 2 === 0 ? 1 : -1);
+    assert.equal(sample.lanes.length,SUBSCAN_LINES);
+    for(let index=0;index<SUBSCAN_LINES;index++){
+      const lane=sample.lanes[index];
+      assert.equal(lane.row,pass*SUBSCAN_LINES+index);seen.add(lane.row);
+    }
     assert.equal(pose.laser, true);
     assert.ok(sample.v > previousV);
     previousV = sample.v;
-    const beforeStroke = getRasterSample((row + .1) / RASTER_ROWS);
-    const afterStroke = getRasterSample((row + .7) / RASTER_ROWS);
+    const beforeStroke = getRasterSample((pass + .1) / MECHANICAL_ROWS);
+    const afterStroke = getRasterSample((pass + .7) / MECHANICAL_ROWS);
     assert.ok((afterStroke.u - beforeStroke.u) * sample.direction > 0);
-    const turning = getToolPose(T.scanStart + duration * (row + .92) / RASTER_ROWS);
+    const blank=(RASTER_STROKE_FRACTION+1)/2;
+    const turning = getToolPose(T.scanStart + duration * (pass + blank) / MECHANICAL_ROWS);
     assert.equal(turning.raster.rowComplete, true);
     assert.equal(turning.laser, false);
-    if (row < RASTER_ROWS - 1) {
-      const before = getImpact(getRasterSample((row + 1 - 1e-7) / RASTER_ROWS));
-      const after = getImpact(getRasterSample((row + 1 + 1e-7) / RASTER_ROWS));
+    if (pass < MECHANICAL_ROWS - 1) {
+      const before = getHeadImpact(getRasterSample((pass + 1 - 1e-7) / MECHANICAL_ROWS));
+      const after = getHeadImpact(getRasterSample((pass + 1 + 1e-7) / MECHANICAL_ROWS));
       assert.ok(Math.hypot(after.x - before.x, after.y - before.y) < .001);
     }
   }
+  assert.equal(seen.size,RASTER_ROWS);
   assert.equal(getRasterSample(1).complete, true);
   assert.equal(getRasterSample(1).laser, false);
+});
+
+test('fine-track clipping never exposes a point ahead of the nozzle or outside its visited chord',()=>{
+  const progressByRow=new Map();
+  for(let step=0;step<=10000;step++){
+    const raster=getRasterSample(step/10000);
+    for(const lane of raster.lanes){
+      const previous=progressByRow.get(lane.row)??0;
+      assert.ok(lane.progress>=previous&&lane.progress<=1);
+      progressByRow.set(lane.row,lane.progress);
+      assert.equal(lane.started,lane.progress>0);
+      if(lane.active){
+        assert.equal(raster.laser,true);
+        assert.ok(Math.abs(raster.headU)<=lane.chord+epsilon);
+        assert.ok(Math.abs(lane.u-raster.headU)<epsilon);
+      }
+      if(lane.started&&!raster.rowComplete){
+        assert.ok((raster.headU-lane.u)*lane.direction>=-epsilon);
+      }
+      if(raster.rowComplete)assert.equal(lane.complete,true);
+    }
+  }
+  assert.equal(progressByRow.size,RASTER_ROWS);
+  for(const value of progressByRow.values())assert.equal(value,1);
 });
 
 test('image reveal progresses only during the scan and remains complete through unloading', () => {
@@ -132,6 +180,22 @@ test('the beam shuts off before lifting and the head returns before the jaws ope
     assert.equal(state.carried, null);
   }
   assert.equal(getProductionState(T.unclampEnd).clamped, 0);
+});
+
+test('the completed portrait remains supported and unlit throughout the full showcase', () => {
+  assert.equal(T.displayStart, T.headReturnEnd);
+  assert.equal(T.displayEnd, T.unclampStart);
+  for (let t = T.displayStart; t < T.displayEnd; t += .003) {
+    const state = getProductionState(t);
+    assert.equal(state.phase, 'show-finished');
+    assert.equal(state.pose.phase, 'show-finished');
+    parked(state.pose);
+    assert.equal(state.pose.reveal, 1);
+    assert.equal(state.partLocation, 'fixture');
+    assert.equal(state.fixtureOccupied, true);
+    assert.equal(state.clamped, 1);
+    assert.equal(state.carried, null);
+  }
 });
 
 test('handling, transport and settle never illuminate the workpiece', () => {

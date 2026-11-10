@@ -1,6 +1,7 @@
 import { LaserScene } from "./photo-scene.js";
 import { TOOL_TIMING, getToolPose } from "./scan-path.js";
 import { DEMO_NAMES, hashText, makeAvatar, portraitDataUrl } from "./art.js";
+import { DEFAULT_SPEED, normalizeSpeed, cycleDuration, advanceProductionTime } from "./production-speed.js";
 
 const $ = (id) => document.getElementById(id);
 const liveMode = new URLSearchParams(window.location.search).has("live");
@@ -16,6 +17,12 @@ const TYPE = {
   crown: { label: "皇冠礼物", icon: "👑", points: 100 },
 };
 const TOTAL_SECONDS = TOOL_TIMING.total;
+const SPEED_STORAGE_KEY = "starlight-production-speed";
+function storedSpeed() {
+  try { return normalizeSpeed(localStorage.getItem(SPEED_STORAGE_KEY)); }
+  catch { return DEFAULT_SPEED; }
+}
+let speed = storedSpeed();
 const MAX_QUEUE = 120;
 const queue = [];
 const seen = new Set();
@@ -31,6 +38,7 @@ let current = null,
   autoTimer = null,
   sequence = 0;
 let scene;
+let trayWasBusy=false,observedExchanges=0;
 
 try {
   scene = new LaserScene($("scene"));
@@ -101,10 +109,12 @@ function log(message, gift = false) {
 function startNext() {
   if (!scene || queue.length === 0 || current || !scene.canStart()) return;
   current = queue.shift();
+  current.workSeconds = 0;
   elapsed = 0;
   const avatar = makeAvatar(current.nickname, current.seed);
   current.avatar = avatar.toDataURL("image/png");
-  scene.prepare(avatar);
+  scene.prepare(avatar,{nickname:current.nickname});
+  current.assessment=scene.assessment;
   $("activeAvatar").src = current.avatar;
   $("activeName").textContent = current.nickname;
   $("jobState").textContent = "LOADING · 圆盘入位";
@@ -126,7 +136,7 @@ function finishJob() {
   old.score += current.points;
   old.finished++;
   ranks.set(current.nickname, old);
-  log(`✦ ${current.nickname} 的彩色勋章雕刻完成（${TOTAL_SECONDS}s）`);
+  log(`✦ ${current.nickname} 的作品完成 · 作品效果分 ${current.assessment.score}（${current.workSeconds.toFixed(1)} 秒）`);
   $("tickerText").textContent =
     `✧ 恭喜「${current.nickname}」领取第 ${done} 枚星光勋章`;
   current = null;
@@ -140,7 +150,10 @@ function updateCounters() {
   $("panelDone").textContent = done.toString();
   $("panelTotal").textContent = received.toString();
   $("finishedCount").textContent = String(done).padStart(4, "0");
-  $("collectorCount").textContent = `${scene?.collectorCount ?? 0} / ${scene?.collectorCapacity ?? 24}`;
+  const tray=scene?.trayState();
+  $("collectorCount").textContent = `${scene?.collectorCount ?? 0} / ${scene?.collectorCapacity ?? 24}${tray?.busy?' · 换盘中':tray?.queued?' · 本轮后换盘':''}`;
+  $("clearCollector").disabled=Boolean(tray?.busy||tray?.queued||(!scene?.collectorCount&&!current));
+  $("clearCollector").textContent=tray?.busy?'收料盘更换中…':tray?.queued?'等待本轮落料后换盘':'更换收料盘';
 }
 function paintRecent() {
   const container = $("recentList");
@@ -213,10 +226,10 @@ function updateProgress() {
     'grip-source':'吸附毛坯','lift-source':'提起毛坯',
     'transfer-to-fixture':'移向夹具','lower-to-fixture':'毛坯落入定位座',
     'release-fixture':'释放毛坯','retract-from-fixture':'吸盘退回',
-    'park-for-print':'取料臂避让','clamp':'夹具锁紧',
+    'park-for-print':'取料臂避让','clamp':'定位座真空吸附',
     'head-load':'雕刻头定位','scan':'逐行雕刻',
-    'head-retract':'关光抬头','head-return':'雕刻头归位',
-    'unclamp':'松开夹具','approach-fixture':'取料臂接近成品',
+    'head-retract':'关光抬头','head-return':'雕刻头归位','show-finished':'成品展示 · 作品效果评分',
+    'unclamp':'定位座解除吸附','approach-fixture':'取料臂接近成品',
     'lower-for-pickup':'吸盘下降','grip-finished':'吸附成品',
     'lift-finished':'提起成品','transfer-to-belt':'移向传送带',
     'lower-to-belt':'成品落到皮带','release-belt':'释放成品',
@@ -234,8 +247,10 @@ function animate(now) {
   if (!paused && scene) {
     if (!current) startNext();
     if (current) {
-      elapsed += Math.min(.075, wallDelta);
-      scene.updateEngraving(Math.min(TOTAL_SECONDS, elapsed));
+      const nextElapsed = Math.min(TOTAL_SECONDS, advanceProductionTime(elapsed, wallDelta, speed));
+      current.workSeconds += (nextElapsed - elapsed) / speed;
+      elapsed = nextElapsed;
+      scene.updateEngraving(elapsed);
       if (now - lastUi > 45) {
         updateProgress();
         lastUi = now;
@@ -245,15 +260,24 @@ function animate(now) {
         startNext();
       }
     } else if (now - lastUi > 450) {
-      const full = !scene.canStart();
-      $("activeName").textContent = full ? "收料盘已满" : "等待下一位星光旅人";
-      $("jobState").textContent = full ? "请在控制台取走收料盘成品" : "STANDBY · 待机";
+      const full = !scene.canStart(),tray=scene.trayState();
+      $("activeName").textContent = tray.busy?"收料盘更换中":full ? "收料盘已满" : "等待下一位星光旅人";
+      const trayLabels={withdraw:'满盘沿导轨退出',handoff:'屏外更换空收料盘',return:'空盘沿导轨返回',dock:'空盘归位确认'};
+      $("jobState").textContent = tray.busy?trayLabels[tray.phase]:full ? "等待换盘完成" : "STANDBY · 待机";
       $("percent").textContent = "0%";
       $("progressFill").style.width = "0%";
       lastUi = now;
     }
   }
-  if (scene) scene.update(delta, now / 1000);
+  if (scene) {
+    scene.update(delta, now / 1000);
+    const tray=scene.trayState();
+    if(tray.busy!==trayWasBusy||tray.exchanges!==observedExchanges){
+      if(tray.busy&&!trayWasBusy)log(`收料盘开始更换 · ${scene.collectorCount} 枚成品随盘退出`);
+      if(tray.exchanges>observedExchanges)log('空收料盘已归位，继续加工');
+      trayWasBusy=tray.busy;observedExchanges=tray.exchanges;updateCounters();
+    } else if(tray.busy&&now-lastUi<50)updateCounters();
+  }
   requestAnimationFrame(animate);
 }
 function reset(remote = false) {
@@ -267,6 +291,7 @@ function reset(remote = false) {
   elapsed = 0;
   sequence = 0;
   scene?.reset();
+  trayWasBusy=false;observedExchanges=0;
   $("activeName").textContent = "等待下一位星光旅人";
   $("activeAvatar").removeAttribute("src");
   $("jobState").textContent = "STANDBY · 待机";
@@ -286,6 +311,31 @@ function setPaused(value) {
   $("pauseButton").textContent = paused ? "▶ 继续" : "Ⅱ 暂停";
   $("pauseButton").style.background = paused ? "#e6ba71" : "#bdcd98";
   log(paused ? "动画已暂停" : "动画已继续");
+}
+function updateSpeedControls() {
+  $("productionSpeed").value = String(speed);
+  $("cycleDuration").textContent = `完整加工流程约 ${cycleDuration(TOTAL_SECONDS, speed).toFixed(1)} 秒 / 件`;
+  $("autoInterval").textContent = `约每 ${(cycleDuration(TOTAL_SECONDS, speed) + .5).toFixed(1)} 秒进入 1 位，最多保留 2 位等待`;
+}
+function restartAutoTimer() {
+  if (autoTimer) clearInterval(autoTimer);
+  autoTimer = null;
+  if (!$("autoSwitch").checked) return;
+  autoTimer = setInterval(() => {
+    if (!paused && scene && queue.length < 2 && scene.collectorCount < scene.collectorCapacity) {
+      enqueue(makeEvent("comment", randomName()));
+    }
+  }, (cycleDuration(TOTAL_SECONDS, speed) + .5) * 1000);
+}
+function setSpeed(value, { broadcast = true } = {}) {
+  const next = normalizeSpeed(value), changed = next !== speed;
+  speed = next;
+  try { localStorage.setItem(SPEED_STORAGE_KEY, String(speed)); } catch {}
+  updateSpeedControls();
+  restartAutoTimer();
+  if (changed) log(`加工速度 ${speed}× · 约 ${cycleDuration(TOTAL_SECONDS, speed).toFixed(1)} 秒 / 件`);
+  if (broadcast) syncChannel?.postMessage({ kind: "speed", speed });
+  return speed;
 }
 function batch(n) {
   for (let i = 0; i < n; i++) {
@@ -314,11 +364,16 @@ $("randomName").addEventListener("click", () => {
 $("batch10").addEventListener("click", () => batch(10));
 $("batch30").addEventListener("click", () => batch(30));
 $("pauseButton").addEventListener("click", () => setPaused(!paused));
-$("clearCollector").addEventListener("click", () => {
-  const removed = scene ? scene.clearCollector() : 0;
+$("productionSpeed").addEventListener("change", e => setSpeed(e.target.value));
+function requestTrayExchange(remote=false){
+  const result=scene?.requestTrayExchange()??{status:'empty'};
   updateCounters();
-  log(removed === null ? "正在落料，当前周期结束后人工取走收料盘成品" : `已人工取走收料盘中的 ${removed} 枚成品`);
-});
+  if(result.status==='queued')log('已安排换盘，当前作品落料完成后执行');
+  if(result.status==='empty')log('收料盘为空，无需更换');
+  if(!remote&&['queued','started'].includes(result.status))syncChannel?.postMessage({kind:'tray-exchange'});
+  return result;
+}
+$("clearCollector").addEventListener("click",()=>requestTrayExchange());
 $("resetButton").addEventListener("click", () => {
   if (confirm("清空所有模拟队列、排行榜和作品，重新开始吗？")) reset();
 });
@@ -326,19 +381,12 @@ if (syncChannel)
   syncChannel.onmessage = (e) => {
     if (e.data?.kind === "event") enqueue(e.data.entry, true);
     if (e.data?.kind === "reset") reset(true);
+    if (e.data?.kind === "speed") setSpeed(e.data.speed, { broadcast: false });
+    if (e.data?.kind === "tray-exchange") requestTrayExchange(true);
   };
 $("autoSwitch").addEventListener("change", (e) => {
-  if (autoTimer) {
-    clearInterval(autoTimer);
-    autoTimer = null;
-  }
-  if (e.target.checked) {
-    autoTimer = setInterval(() => {
-      if (!paused && queue.length < 30)
-        enqueue(makeEvent("comment", randomName()));
-    }, TOTAL_SECONDS * 1000 + 500);
-    log("自动观众已开启");
-  } else log("自动观众已关闭");
+  restartAutoTimer();
+  log(e.target.checked ? "自动观众已开启" : "自动观众已关闭");
 });
 $("nickname").addEventListener("keydown", (e) => {
   if (e.key === "Enter") enqueue(makeEvent("comment"));
@@ -361,14 +409,21 @@ window.LaserStudio = {
     completed: done,
     received,
     paused,
+    speed,
+    cycleSeconds: cycleDuration(TOTAL_SECONDS, speed),
+    lastScore: completed[0]?.assessment?.score ?? null,
     collectorCount: scene?.collectorCount ?? 0,
     collectorCapacity: scene?.collectorCapacity ?? 24,
+    trayExchanging: scene?.trayState().busy ?? false,
+    exchangedCount: scene?.exchangedCount ?? 0,
   }),
   diagnostics: () => scene?.diagnostics(),
+  setSpeed,
   reset,
 };
 
 paintRanks();
+updateSpeedControls();
 updateCounters();
 log("写实工坊已就绪");
 requestAnimationFrame(animate);

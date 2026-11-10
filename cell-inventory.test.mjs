@@ -13,6 +13,8 @@ test('initial belt has a free loading berth and three unique demonstration piece
   assert.deepEqual(cell.belt.map(record => record?.portrait ?? null), [null, ...demos]);
   assert.deepEqual(cell.collector, []);
   assert.equal(cell.active, null);
+  assert.equal(cell.belt[1].assessment, null);
+  assert.equal(cell.belt[1].nickname, '');
   assert.equal(new Set(ids(cell.snapshot())).size, 3);
   assert.ok(cell.canStart());
 });
@@ -130,4 +132,46 @@ test('an empty demonstration belt still retains all newly made pieces', () => {
   }
   assert.equal(cell.collector.length, 1);
   assert.equal(records(cell.snapshot()).length, 4);
+});
+
+test('each immutable score follows its own piece through indexing, collection, clearing and reset', () => {
+  const initialAssessments = [71, 82, 93].map(score => ({ score, comment: `demo-${score}` }));
+  const cell = new CellInventory(demos, 2, { initialAssessments });
+  const expected = new Map(demos.map((portrait, index) => [portrait, {
+    assessment: { ...initialAssessments[index] }, nickname: '',
+  }]));
+  // Mutating caller-owned initialization data must not change existing pieces
+  // or the scores restored by a later reset.
+  initialAssessments[0].score = -1;
+  initialAssessments.splice(1);
+  const removed = [];
+  const check = piece => {
+    const entry = expected.get(piece.portrait);
+    assert.deepEqual(piece.assessment, entry.assessment);
+    assert.equal(piece.nickname, entry.nickname);
+    assert.ok(Object.isFrozen(piece));
+    assert.ok(Object.isFrozen(piece.assessment));
+  };
+  records(cell.snapshot()).forEach(check);
+  for (let cycle = 0; cycle < 8; cycle++) {
+    if (!cell.canStart()) removed.push(...cell.clearCollector());
+    const portrait = `scored-${cycle}`, nickname = `观众${cycle}`;
+    const assessment = { score: 35 + cycle * 7, comment: `作品${cycle}`, clarity: 50 + cycle };
+    expected.set(portrait, { assessment: { ...assessment }, nickname });
+    assert.ok(cell.begin(portrait, { assessment, nickname }));
+    assert.notEqual(cell.active.assessment, assessment);
+    assessment.score = 0;
+    assessment.comment = 'caller changed';
+    check(cell.active);
+    const active = cell.active, result = cell.commit();
+    assert.equal(result.placed, active);
+    [...records(cell.snapshot()), ...removed].forEach(check);
+  }
+  assert.ok(removed.length > 0);
+  assert.equal(cell.collector.length, cell.capacity);
+  cell.reset();
+  assert.deepEqual(cell.belt.slice(1).map(piece => piece.assessment.score), [71, 82, 93]);
+  assert.equal(cell.active, null);
+  assert.equal(cell.collector.length, 0);
+  records(cell.snapshot()).forEach(check);
 });

@@ -4,7 +4,7 @@ import { solveArm, drawPickArm, projectArmPoint, unprojectArmPoint, ARM_GEOMETRY
 import { getHandlingState, HANDLING_TIMING as H } from './handling-cycle.js';
 
 const points = {
-  source: { x: 239, y: 964 }, fixture: { x: 535, y: 892 },
+  source: { x: 239, y: 964 }, fixture: { x: 530, y: 891 },
   beltLoad: { x: 305, y: 1090 }, park: { x: 360, y: 900 },
 };
 const length = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -22,16 +22,11 @@ test('source, fixture, belt and parking positions have exact rigid world-plane l
 });
 
 test('the selected elbow branch stays in front of the rear crossbeam', () => {
-  for (const [name, expected] of [
-    ['source', { x: 375, y: 712 }],
-    ['fixture', { x: 365, y: 701 }],
-    ['beltLoad', { x: 388, y: 738 }],
-    ['park', { x: 267, y: 659 }],
-  ]) {
-    const { elbow } = solveArm(points[name]);
-    assert.ok(length(elbow, expected) < 3, `${name} selected wrong elbow branch`);
-    assert.ok(elbow.x > G.shoulder.x);
-    assert.ok(elbow.y > 655);
+  for (const [name, target] of Object.entries(points)) {
+    const { elbow, world } = solveArm(target);
+    const cross=world.wrist.x*world.elbow.y-world.wrist.y*world.elbow.x;
+    assert.ok(cross<0, `${name} selected wrong elbow branch`);
+    assert.ok(elbow.x>G.shoulder.x&&elbow.y>655, `${name} collides with rear frame`);
   }
 });
 

@@ -1,17 +1,34 @@
 import { makeAvatar } from './art.js';
-import { getToolPose, getRasterSample, PRINT_SURFACE, LASER_ORIGIN, TOOL_TIMING, ease, clamp } from './scan-path.js';
+import { getToolPose, PRINT_SURFACE, LASER_ORIGIN, TOOL_TIMING, ease, clamp } from './scan-path.js';
 import { getHandlingState } from './handling-cycle.js';
 import { BELT, BELT_SLOTS, BELT_LOAD, beltCoin } from './belt-plane.js';
 import { CellInventory } from './cell-inventory.js';
 import { drawPickArm } from './pick-arm.js';
+import { getLiveCamera, getShowcaseState } from './live-camera.js';
+import { INSPECTION_CAMERA, INSPECTION_TOKEN, INSPECTION_THICKNESS } from './showcase-view.js';
+import { analyzePortrait } from './portrait-score.js';
+import { drawScoreOverlay } from './score-overlay.js';
+import { drawMetalCoin } from './coin-material.js';
+import { getTrayExchangePose } from './tray-exchange.js';
 
 export const LIVE_WIDTH=1080, LIVE_HEIGHT=1920;
 const W=941,H=1672;
 const loadImage=async url=>{const im=new Image();im.src=url;await im.decode();return im;};
-const [background,reference,spindle,goldPhoto]=await Promise.all([
- loadImage('./assets/approved-cell-clean.png'),loadImage('./output/structure-concept-v3.png'),
- loadImage('./assets/spindle-layer.png'),loadImage('./assets/workshop-blank.png'),
+const assessPortrait=portrait=>{
+ const canvas=document.createElement('canvas');canvas.width=canvas.height=320;
+ const c=canvas.getContext('2d',{willReadFrequently:true});c.drawImage(portrait,0,0,320,320);
+ return analyzePortrait(c.getImageData(0,0,320,320));
+};
+const [background,reference,spindle,inspectionPhoto,machiningPhoto,trayPhoto]=await Promise.all([
+ loadImage('./assets/workcell-exchange-base-v1.png'),loadImage('./output/structure-concept-v3.png'),
+ loadImage('./assets/spindle-layer.png'),
+ loadImage('./assets/portrait-inspection-camera-v1.png'),
+ loadImage('./assets/machining-detail-plate-v1.png'),
+ loadImage('./assets/receiving-tray-layer-v1.png'),
 ]);
+const machiningCamera=getLiveCamera(TOOL_TIMING.scanStart);
+const machiningScale=LIVE_WIDTH/machiningPhoto.width;
+const machiningTop=1108-992*machiningScale;
 const mix=(a,b,t)=>a+(b-a)*t;
 const vectorPose=(x,y,rx,ry,angle=0)=>({x,y,a:Math.cos(angle)*rx,b:Math.sin(angle)*rx,c:-Math.sin(angle)*ry,d:Math.cos(angle)*ry});
 const fixturePose=vectorPose(PRINT_SURFACE.x,PRINT_SURFACE.y,PRINT_SURFACE.rx,PRINT_SURFACE.ry,PRINT_SURFACE.angle);
@@ -21,8 +38,6 @@ const points={source:sourcePose,fixture:fixturePose,beltLoad:BELT_LOAD,park:park
 const mixPose=(a,b,t)=>Object.fromEntries(['x','y','a','b','c','d'].map(key=>[key,mix(a[key],b[key],t)]));
 const slidePose=(p,x,y)=>({...p,x,y});
 const cubic=(a,b,c,d,t)=>(1-t)**3*a+3*(1-t)**2*t*b+3*(1-t)*t*t*c+t**3*d;
-const metalTexture=document.createElement('canvas');metalTexture.width=metalTexture.height=384;
-const mc=metalTexture.getContext('2d');mc.translate(192,192);mc.scale(192/116,192/54);mc.rotate(-.1);mc.drawImage(goldPhoto,-524,-869);
 const invEase=value=>{let a=0,b=1;for(let i=0;i<30;i++){const m=(a+b)/2;if(ease(m)<value)a=m;else b=m;}return(a+b)/2;};
 const outgoingThreshold=(1-BELT_SLOTS[3].u)/BELT.slotStep;
 const outgoingStart=TOOL_TIMING.beltIndexStart+(TOOL_TIMING.indexEnd-TOOL_TIMING.beltIndexStart)*invEase(outgoingThreshold);
@@ -40,17 +55,51 @@ export class LaserScene {
   this.container=container;this.canvas=document.createElement('canvas');
   this.canvas.width=LIVE_WIDTH;this.canvas.height=LIVE_HEIGHT;
   this.canvas.setAttribute('aria-label','1080乘1920自动上下料雕刻工作站：取料、加工、输送与收料');this.canvas.setAttribute('role','img');
-  container.append(this.canvas);this.ctx=this.canvas.getContext('2d',{alpha:false});
+  container.append(this.canvas);this.ctx=this.canvas.getContext('2d',{alpha:false});this.ctx.imageSmoothingQuality='high';
   this.defaults=[0,1,2].map(seed=>makeAvatar('示例作品',seed));
-  this.inventory=new CellInventory(this.defaults,24);this.elapsed=0;this.beltOffset=0;this.paused=false;this.frozenTime=0;
+  this.inventory=new CellInventory(this.defaults,24,{initialAssessments:this.defaults.map(assessPortrait)});this.elapsed=0;this.beltOffset=0;this.paused=false;this.frozenTime=0;
+  this.trayExchange=null;this.pendingCollectorClear=false;this.exchangedCount=0;this.exchangeCount=0;
   this.update(0,0);
  }
- canStart(){return this.inventory.canStart();}
- prepare(portrait){if(!this.inventory.begin(portrait))return false;this.elapsed=0;return true;}
+ canStart(){return !this.trayExchange&&!this.pendingCollectorClear&&this.inventory.canStart();}
+ prepare(portrait,{nickname=''}={}){
+  if(!this.canStart())return false;
+  const assessment=assessPortrait(portrait);
+  if(!this.inventory.begin(portrait,{assessment,nickname}))return false;
+  this.elapsed=0;this.assessment=assessment;this.nickname=String(nickname);return true;
+ }
  updateEngraving(elapsed){this.elapsed=Math.max(0,Math.min(TOOL_TIMING.total,elapsed));}
- complete(){if(!this.inventory.active)return;this.inventory.commit();this.beltOffset+=BELT.slotStep;this.elapsed=TOOL_TIMING.total;if(this.pendingCollectorClear){this.inventory.clearCollector();this.pendingCollectorClear=false;}}
- clearCollector(){if(this.inventory.active&&this.elapsed>=outgoingStart){this.pendingCollectorClear=true;return null;}return this.inventory.clearCollector().length;}
- reset(){this.inventory.reset();this.elapsed=0;this.beltOffset=0;this.pendingCollectorClear=false;}
+ complete(){
+  if(!this.inventory.active)return;
+  this.inventory.commit();this.beltOffset+=BELT.slotStep;this.elapsed=TOOL_TIMING.total;
+  if(this.pendingCollectorClear||this.collectorCount>=this.collectorCapacity)this.startTrayExchange();
+ }
+ requestTrayExchange(){
+  if(this.trayExchange||this.pendingCollectorClear)return {status:'busy',count:this.collectorCount};
+  if(!this.collectorCount&&!this.inventory.active)return {status:'empty',count:0};
+  this.pendingCollectorClear=true;
+  if(this.inventory.active)return {status:'queued',count:this.collectorCount};
+  this.startTrayExchange();return {status:'started',count:this.collectorCount};
+ }
+ clearCollector(){return this.requestTrayExchange();}
+ startTrayExchange(){
+  if(this.inventory.active||this.trayExchange)return;
+  this.pendingCollectorClear=false;this.trayExchange={elapsed:0,transferred:false,count:this.collectorCount};
+ }
+ advanceTrayExchange(delta){
+  if(!this.trayExchange||this.paused)return;
+  const exchange=this.trayExchange;exchange.elapsed+=clamp(Number.isFinite(delta)?delta:0,0,.1);
+  const pose=getTrayExchangePose(exchange.elapsed);
+  if(pose.transferReady&&!exchange.transferred){
+   this.exchangedCount+=this.inventory.clearCollector().length;exchange.transferred=true;
+  }
+  if(pose.complete){this.trayExchange=null;this.exchangeCount++;}
+ }
+ trayState(){
+  const pose=this.trayExchange?getTrayExchangePose(this.trayExchange.elapsed):{phase:'ready',offsetX:0,loaded:true,transferReady:false,complete:true};
+  return {...pose,offsetY:-pose.offsetX*.018,busy:Boolean(this.trayExchange),queued:this.pendingCollectorClear,elapsed:this.trayExchange?.elapsed??0,exchangedCount:this.exchangedCount,exchanges:this.exchangeCount};
+ }
+ reset(){this.inventory.reset();this.elapsed=0;this.beltOffset=0;this.pendingCollectorClear=false;this.trayExchange=null;this.exchangedCount=0;this.exchangeCount=0;this.assessment=null;this.nickname='';}
  get collectorCount(){return this.inventory.collector.length;}
  get collectorCapacity(){return this.inventory.capacity;}
  getState(){return this.inventory.active?getHandlingState(this.elapsed,points):{
@@ -62,21 +111,9 @@ export class LaserScene {
   c.scale(1+lift*.002,1+lift*.002);const g=c.createRadialGradient(0,0,35,0,0,76);
   g.addColorStop(0,`rgba(0,0,0,${Math.max(.06,.26-lift*.004)})`);g.addColorStop(1,'#00000000');c.fillStyle=g;c.fillRect(-85,-85,170,170);c.restore();
  }
- drawCoin(image,p,{raster=null,blank=false,shadow=true}={}) {
-  const c=this.ctx,r=64;if(shadow)this.drawShadow(p);
-  c.save();c.transform(p.a/r,p.b/r,p.c/r,p.d/r,p.x,p.y);
-  const depth=3.5*r/Math.hypot(p.c,p.d);
-  const side=c.createLinearGradient(-r,0,r,depth*2);side.addColorStop(0,'#7f4d17');side.addColorStop(.2,'#f5c466');side.addColorStop(.4,'#a77121');side.addColorStop(.65,'#ffe5a2');side.addColorStop(1,'#6d4517');
-  c.fillStyle=side;c.beginPath();c.arc(0,depth,r,0,Math.PI*2);c.fill();
-  c.save();c.beginPath();c.arc(0,0,r,0,Math.PI*2);c.clip();c.drawImage(metalTexture,-r,-r,r*2,r*2);
-  if(image&&!blank){
-   c.save();if(raster&&!raster.complete){const h=r*2/raster.rows;c.beginPath();c.rect(-r,-r,r*2,h*raster.row);const y=-r+h*raster.row;
-    if(raster.rowComplete)c.rect(-r,y,r*2,h);else if(raster.direction>0)c.rect(-r,y,(raster.u+1)*r,h);else c.rect(raster.u*r,y,(1-raster.u)*r,h);c.clip();}
-   c.drawImage(image,-r,-r,r*2,r*2);const tint=c.createLinearGradient(-r,-r,r,r);tint.addColorStop(0,'#ffe8bc18');tint.addColorStop(.5,'#ffffff00');tint.addColorStop(.8,'#fff0b718');tint.addColorStop(1,'#34220b24');c.fillStyle=tint;c.fillRect(-r,-r,r*2,r*2);c.restore();
-  }
-  c.strokeStyle='#89571b';c.lineWidth=4.3;c.beginPath();c.arc(0,0,r-1,0,Math.PI*2);c.stroke();c.strokeStyle='#ffe7a2';c.lineWidth=1.1;c.beginPath();c.arc(0,0,r-1.6,Math.PI,Math.PI*2);c.stroke();
-  c.strokeStyle='#edbf62';c.lineWidth=1.7;c.beginPath();c.arc(0,0,r-3,0,Math.PI*2);c.stroke();c.restore();
-  for(let i=1;i<24;i++){const a=i/24*Math.PI,x=Math.cos(a)*r,y=Math.sin(a)*r;c.strokeStyle=i%3?'#ffe0a055':'#87531a66';c.lineWidth=.6;c.beginPath();c.moveTo(x,y+1);c.lineTo(x,y+depth-1);c.stroke();}c.restore();
+ drawCoin(image,p,{raster=null,blank=false,shadow=true,thickness=3.5,cache=true}={}) {
+  if(shadow)this.drawShadow(p);
+  drawMetalCoin(this.ctx,image,p,{raster,blank,thickness,cache});
  }
 
  drawFeeder(state) {
@@ -86,14 +123,6 @@ export class LaserScene {
   for(let i=3;i>=1;i--){const x=sourcePose.x-i*10+advance*10,y=sourcePose.y-i*44+advance*44;
    this.drawCoin(null,vectorPose(x,y,31-i*.9,15-i*.4,.1),{blank:true});}
   if(!active||!state.sourceConsumed)this.drawCoin(null,sourcePose,{blank:true});c.restore();
- }
-
- drawClamps(closed) {
-  const c=this.ctx,p=PRINT_SURFACE;
-  for(const angle of [Math.PI,.03,-Math.PI/2]){
-   const edge=39+(1-closed)*9,x=p.x+Math.cos(angle)*edge,y=p.y+Math.sin(angle)*edge*.47;
-   c.save();c.translate(x,y);c.rotate(Math.atan2(Math.sin(angle)*.47,Math.cos(angle)));const g=c.createLinearGradient(0,-3,0,4);g.addColorStop(0,'#d0d0c2');g.addColorStop(.3,'#a0a895');g.addColorStop(1,'#424b3f');c.fillStyle='#111911';c.fillRect(-2,-1,15,6);c.fillStyle=g;c.fillRect(-3,-4,15,5);c.strokeStyle='#353d31';c.lineWidth=.6;c.strokeRect(-3,-4,15,5);c.restore();
-  }
  }
 
  activePose(state) {
@@ -111,7 +140,8 @@ export class LaserScene {
   const p=this.activePose(state);
   if(state.partLocation==='gripper')this.drawShadow({...p,y:p.y+state.armTarget.lift},state.armTarget.lift);
   const blank=this.elapsed<TOOL_TIMING.scanStart;
-  this.drawCoin(active.portrait,p,{blank,raster:state.partLocation==='fixture'?pose.raster:null,shadow:state.partLocation!=='gripper'});
+  const moving=state.partLocation==='gripper'||(state.partLocation==='belt'&&state.beltProgress>0&&state.beltProgress<1);
+  this.drawCoin(active.portrait,p,{blank,raster:state.partLocation==='fixture'?pose.raster:null,shadow:state.partLocation!=='gripper',cache:!moving});
  }
 
  outgoingPose(state) {
@@ -130,9 +160,25 @@ export class LaserScene {
  }
 
  drawCollector() {
-  const pieces=this.inventory.collector;
+  const pieces=this.inventory.collector,c=this.ctx,tray=this.trayState();
+  c.save();c.translate(tray.offsetX,tray.offsetY);
   const order=pieces.map((_,i)=>i).sort((a,b)=>collectorPose(a%6).y-collectorPose(b%6).y||a-b);
   for(const i of order)this.drawCoin(pieces[i].portrait,collectorPose(i));
+  c.restore();
+ }
+ drawTraySupport(){
+  const c=this.ctx;c.save();
+  for(const y of [1263,1353]){
+   const g=c.createLinearGradient(0,y-3,0,y+5);g.addColorStop(0,'#6d716e');g.addColorStop(.18,'#d5d5c9');g.addColorStop(.4,'#676e69');g.addColorStop(.6,'#292e2b');g.addColorStop(1,'#a0a498');
+   c.fillStyle='#00000042';c.beginPath();c.moveTo(562,y+6);c.lineTo(1000,y-2);c.lineTo(1000,y+7);c.lineTo(562,y+15);c.closePath();c.fill();
+   c.fillStyle=g;c.beginPath();c.moveTo(562,y-3);c.lineTo(1000,y-11);c.lineTo(1000,y-3);c.lineTo(562,y+5);c.closePath();c.fill();
+  }
+  c.restore();
+ }
+ drawTray(){
+  const c=this.ctx,tray=this.trayState();c.save();c.translate(tray.offsetX,tray.offsetY);
+  c.save();c.translate(718,1368);c.scale(1,.12);const shadow=c.createRadialGradient(0,0,80,0,0,190);shadow.addColorStop(0,'#00000074');shadow.addColorStop(1,'#00000000');c.fillStyle=shadow;c.fillRect(-195,-195,390,390);c.restore();
+  c.drawImage(trayPhoto,80,110,1590,715,548,1211,342,158);c.restore();
  }
  drawBelt(state) {
   const c=this.ctx;
@@ -143,13 +189,52 @@ export class LaserScene {
   const amount=(this.beltOffset+q*BELT.slotStep)*435;
   this.beltPattern.setTransform(new DOMMatrix().translate(amount,-amount*.028));c.globalAlpha=.20;c.fillStyle=this.beltPattern;c.fillRect(220,1020,490,125);c.restore();
   const belt=this.inventory.belt;
-  for(let i=1;i<3;i++)if(belt[i])this.drawCoin(belt[i].portrait,beltCoin(BELT_SLOTS[i].u+q*BELT.slotStep));
-  if(belt[3]){const out=this.inventory.active?this.outgoingPose(state):{pose:BELT_SLOTS[3],location:'belt'};this.drawCoin(belt[3].portrait,out.pose);}
+  for(let i=1;i<3;i++)if(belt[i])this.drawCoin(belt[i].portrait,beltCoin(BELT_SLOTS[i].u+q*BELT.slotStep),{cache:q===0||q===1});
+  if(belt[3]){const out=this.inventory.active?this.outgoingPose(state):{pose:BELT_SLOTS[3],location:'belt'};this.drawCoin(belt[3].portrait,out.pose,{cache:out.location==='belt'&&(q===0||q===1)});}
+ }
+
+ beltScores(state=this.getState(),camera=getLiveCamera(this.elapsed,Boolean(this.inventory.active))) {
+  const opacity=1-ease(camera.detail/.12),labels=[];
+  if(opacity<=0)return labels;
+  const add=(piece,pose,fade=1)=>{
+   if(!piece?.assessment||!Number.isFinite(piece.assessment.score)||fade<=0)return;
+   const x=pose.x*camera.scale+camera.tx;
+   const y=(pose.y-Math.hypot(pose.b,pose.d))*camera.scale+camera.ty-12;
+   if(x<0||x>LIVE_WIDTH||y<45||y>LIVE_HEIGHT)return;
+   labels.push({id:piece.id,score:piece.assessment.score,x,y,alpha:opacity*fade});
+  };
+  const belt=this.inventory.belt,q=state.beltProgress;
+  for(let i=1;i<3;i++)add(belt[i],beltCoin(BELT_SLOTS[i].u+q*BELT.slotStep));
+  if(belt[3]){
+   const out=this.inventory.active?this.outgoingPose(state):{pose:BELT_SLOTS[3]};
+   const fade=this.inventory.active?1-ease((this.elapsed-outgoingStart)/(TOOL_TIMING.indexEnd-outgoingStart)):1;
+   add(belt[3],out.pose,fade);
+  }
+  if(this.inventory.active&&state.partLocation==='belt'){
+   add(this.inventory.active,this.activePose(state),ease((this.elapsed-TOOL_TIMING.beltRelease)/.25));
+  }
+  return labels;
+ }
+
+ drawBeltScores(state,camera) {
+  const c=this.ctx;c.save();c.setTransform(1,0,0,1,0,0);
+  c.font='600 28px "Microsoft YaHei", "Segoe UI", sans-serif';c.textAlign='center';c.textBaseline='middle';
+  for(const label of this.beltScores(state,camera)){
+   const text=`${Math.round(label.score)}分`,width=Math.ceil(c.measureText(text).width+24);
+   c.globalAlpha=label.alpha;c.shadowColor='#00000066';c.shadowBlur=8;c.shadowOffsetY=2;
+   c.fillStyle='#101711dd';c.beginPath();c.roundRect(label.x-width/2,label.y-38,width,38,11);c.fill();
+   c.shadowBlur=0;c.shadowOffsetY=0;c.strokeStyle='#e6c58b88';c.lineWidth=1;c.stroke();
+   c.fillStyle='#f6dca4';c.fillText(text,label.x,label.y-19);
+  }
+  c.restore();
  }
 
  drawCollectorFront() {
   // Only the physical tray lip occludes the bottoms of received coins.
-  const c=this.ctx;c.save();c.beginPath();c.moveTo(585,1323);c.lineTo(873,1318);c.lineTo(877,1350);c.lineTo(595,1362);c.closePath();c.clip();c.drawImage(background,0,0,W,H);c.restore();
+  const c=this.ctx,tray=this.trayState();c.save();c.translate(tray.offsetX,tray.offsetY);
+  c.beginPath();c.moveTo(578,1327);c.lineTo(874,1322);c.lineTo(895,1374);c.lineTo(579,1374);c.closePath();c.clip();c.drawImage(trayPhoto,80,110,1590,715,548,1211,342,158);c.restore();
+  // The outlet stays attached to the machine while either tray passes below.
+  c.save();c.beginPath();c.moveTo(698,1127);c.lineTo(741,1126);c.lineTo(827,1232);c.lineTo(760,1236);c.closePath();c.clip();c.drawImage(background,0,0,W,H);c.restore();
  }
 
  drawLaserHead(pose) {
@@ -167,9 +252,30 @@ export class LaserScene {
   c.save();c.strokeStyle='#111a13';c.lineWidth=6;c.lineCap='round';c.beginPath();c.moveTo(LASER_ORIGIN.x+pose.x-19,588);c.bezierCurveTo(LASER_ORIGIN.x+pose.x+16,610,LASER_ORIGIN.x+pose.x+22,headY-90,LASER_ORIGIN.x+pose.x+6,headY-67);c.stroke();c.strokeStyle='#5e6a5b';c.lineWidth=1;c.stroke();c.restore();
  }
  drawLaser(pose,now) {
-  const c=this.ctx,x=LASER_ORIGIN.x+pose.x,y=LASER_ORIGIN.y+pose.y,nozzleY=LASER_ORIGIN.nozzleY+pose.y-pose.lift;
-  c.save();c.globalCompositeOperation='screen';const g=c.createRadialGradient(x,y,.4,x,y,10);g.addColorStop(0,'#e2fff9e0');g.addColorStop(.13,'#46ffedb0');g.addColorStop(.5,'#16e7d735');g.addColorStop(1,'#0bfad900');c.fillStyle=g;c.fillRect(x-10,y-10,20,20);c.strokeStyle='#9cfff0';c.shadowColor='#16efdb';c.shadowBlur=3;c.lineWidth=.8;c.beginPath();c.moveTo(x,nozzleY);c.lineTo(x,y);c.stroke();
+  const c=this.ctx,x=pose.impact?.x??LASER_ORIGIN.x+pose.x,y=pose.impact?.y??LASER_ORIGIN.y+pose.y,nozzleX=LASER_ORIGIN.x+pose.x,nozzleY=LASER_ORIGIN.nozzleY+pose.y-pose.lift;
+  c.save();c.globalCompositeOperation='screen';const g=c.createRadialGradient(x,y,.25,x,y,3.5);g.addColorStop(0,'#e2fff9c0');g.addColorStop(.13,'#46ffed90');g.addColorStop(.5,'#16e7d729');g.addColorStop(1,'#0bfad900');c.fillStyle=g;c.fillRect(x-3.5,y-3.5,7,7);c.strokeStyle='#9cfff0a0';c.shadowColor='#16efdb';c.shadowBlur=.8;c.lineWidth=.45;c.beginPath();c.moveTo(nozzleX,nozzleY);c.lineTo(x,y);c.stroke();
+  for(const point of pose.microImpacts??[]){c.fillStyle='#cafff4b0';c.beginPath();c.arc(point.x,point.y,.22,0,Math.PI*2);c.fill();}
   c.shadowBlur=0;for(let i=0;i<3;i++){const t=(now*2+i*.31)%1,a=i*2.3;c.globalAlpha=(1-t)*.28;c.fillStyle=i%2?'#b4fff0':'#ffda92';c.fillRect(x+Math.cos(a)*t*5,y+Math.sin(a)*t*3,.7,.7);}c.restore();
+ }
+
+ drawShowcase(showcase) {
+  if(!showcase.visible||!this.inventory.active)return;
+  const c=this.ctx,view=INSPECTION_CAMERA;
+  c.save();c.globalAlpha=showcase.alpha;
+  c.setTransform(view.scale,0,0,view.scale,view.tx,view.ty);c.drawImage(inspectionPhoto,0,0,941,1672);
+  c.setTransform(1,0,0,1,0,0);
+  this.drawCoin(this.inventory.active.portrait,INSPECTION_TOKEN,{shadow:false,thickness:INSPECTION_THICKNESS});
+  drawScoreOverlay(c,this.assessment,showcase.scoreProgress,{width:LIVE_WIDTH,height:LIVE_HEIGHT,nickname:this.nickname});
+  c.restore();
+ }
+
+ drawMachiningDetail(camera) {
+  if(camera.detail<=.8)return;
+  const c=this.ctx;c.save();c.globalAlpha=ease((camera.detail-.8)/.2);
+  c.drawImage(machiningPhoto,-machiningCamera.tx/machiningCamera.scale,
+   (machiningTop-machiningCamera.ty)/machiningCamera.scale,
+   LIVE_WIDTH/machiningCamera.scale,machiningPhoto.height*machiningScale/machiningCamera.scale);
+  c.restore();
  }
 
  diagnostics(state=this.getState()) {
@@ -177,15 +283,23 @@ export class LaserScene {
   snapshot.collector.forEach(p=>owners.push({id:p.id,location:'collector'}));
   snapshot.belt.forEach((p,i)=>{if(p)owners.push({id:p.id,location:i===3&&snapshot.active?this.outgoingPose(state).location:'belt'});});
   if(snapshot.active)owners.push({id:snapshot.active.id,location:state.partLocation});
-  return {phase:state.phase,elapsed:this.elapsed,held:state.carried,vacuum:state.vacuum,collector:this.collectorCount,capacity:this.collectorCapacity,owners,stockUnique:new Set(owners.map(p=>p.id)).size===owners.length};
+  const showcase=getShowcaseState(this.elapsed,Boolean(this.inventory.active));
+  return {phase:state.phase,elapsed:this.elapsed,held:state.carried,vacuum:state.vacuum,collector:this.collectorCount,capacity:this.collectorCapacity,owners,stockUnique:new Set(owners.map(p=>p.id)).size===owners.length,camera:getLiveCamera(this.elapsed,Boolean(this.inventory.active)),showcase,rating:showcase.visible?this.assessment:null,beltScores:this.beltScores(state),tray:this.trayState()};
  }
  update(delta,now) {
   if(this.paused)now=this.frozenTime;else this.frozenTime=now;
-  const c=this.ctx,scale=Math.max(LIVE_WIDTH/W,LIVE_HEIGHT/H);c.setTransform(scale,0,0,scale,(LIVE_WIDTH-W*scale)/2,(LIVE_HEIGHT-H*scale)/2);c.drawImage(background,0,0,W,H);
+  this.advanceTrayExchange(delta);
+  const c=this.ctx,camera=getLiveCamera(this.elapsed,Boolean(this.inventory.active));
+  c.setTransform(camera.scale,0,0,camera.scale,camera.tx,camera.ty);c.drawImage(background,0,0,W,H);
+  this.drawMachiningDetail(camera);
   const state=this.getState(),pose=getToolPose(this.inventory.active?this.elapsed:TOOL_TIMING.total);
-  this.drawCollector();this.drawFeeder(state);this.drawBelt(state);this.drawActive(state,pose);this.drawClamps(state.clamped);
+  // The photographed vacuum nest supports and holds the disk from underneath;
+  // no extra jaws are painted over the fixture or the portrait face.
+  this.drawTraySupport();this.drawTray();this.drawCollector();this.drawFeeder(state);this.drawBelt(state);this.drawActive(state,pose);
   this.drawLaserHead(pose);drawPickArm(c,reference,state.armTarget,{vacuum:state.vacuum});
   if(pose.laser&&!this.paused)this.drawLaser(pose,now);
   this.drawCollectorFront();
+  this.drawBeltScores(state,camera);
+  this.drawShowcase(getShowcaseState(this.elapsed,Boolean(this.inventory.active)));
  }
 }

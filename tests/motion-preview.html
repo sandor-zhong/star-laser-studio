@@ -1,37 +1,84 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><base href="/"><meta name="viewport" content="width=device-width,initial-scale=1"><title>机械运动验证</title><style>body{margin:0;background:#151915;color:#ddd;font:12px sans-serif}nav{position:fixed;top:8px;left:8px;z-index:2;background:#152018d9;padding:8px;border-radius:5px}nav a,nav button{margin:3px;color:#ddd}nav button{background:#32452d;border:1px solid #87936b;padding:7px}#scene{position:absolute;inset:0;display:grid;place-items:center}canvas{width:min(100vw,56.25vh);height:auto;display:block}</style><div id="scene"></div><nav><a href="/tests/motion-preview.html?t=.95">吸附</a><a href="/tests/motion-preview.html?t=1.9">搬运</a><a href="/tests/motion-preview.html?t=6">雕刻</a><a href="/tests/motion-preview.html?t=12.45">放料</a><a href="/tests/motion-preview.html?t=14.95">滑槽</a><a href="/tests/motion-preview.html?t=15.65">收料</a><button id="record">录制完整生产循环</button><button id="audit">检查连续生产</button><span id="status"></span></nav><textarea id="recording" hidden></textarea><textarea id="frame" hidden></textarea><div id="exports" hidden></div><output id="audit-result" hidden></output><video id="verified-preview" src="/PREVIEW-approved-1080x1920.webm" preload="metadata" hidden></video><output id="video-info" hidden></output><script type="module">
-import {LaserScene} from './photo-scene.js';import {makeAvatar} from './art.js';import {getToolPose,TOOL_TIMING} from './scan-path.js';
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><base href="/"><meta name="viewport" content="width=device-width,initial-scale=1"><title>直播头像近景验证</title>
+<style>body{margin:0;background:#151915;color:#ddd;font:12px sans-serif}nav{position:fixed;top:8px;left:8px;z-index:2;background:#152018e8;padding:8px;border-radius:5px;max-width:90vw}nav a,nav button{margin:3px;color:#ddd}nav button{background:#32452d;border:1px solid #87936b;padding:7px}#scene{position:absolute;inset:0;display:grid;place-items:center}canvas{width:min(100vw,56.25vh);height:auto;display:block}</style>
+<div id="scene"></div><nav><span id="views"></span><button id="record">录制生产与换盘</button><button id="audit">检查连续生产</button><span id="status"></span></nav>
+<div id="exports" hidden></div><output id="audit-result" hidden></output><output id="measurements" hidden></output><output id="clock-info" hidden></output>
+<video id="verified-preview" src="/PREVIEW-realism-production-1080x1920.webm" preload="metadata" hidden></video><output id="video-info" hidden></output>
+<script type="importmap">{"imports":{"./cell-inventory.js":"./cell-inventory.js?v=belt-scores1","./coin-material.js":"./coin-material.js?v=realism3","./tray-exchange.js":"./tray-exchange.js?v=realism1","./art.js":"./art.js?v=portrait-score1","./photo-scene.js":"./photo-scene.js?v=realism2","./scan-path.js":"./scan-path.js?v=realism1","./live-camera.js":"./live-camera.js?v=portrait-score1","./handling-cycle.js":"./handling-cycle.js?v=portrait-score1","./showcase-view.js":"./showcase-view.js?v=portrait-score1","./portrait-score.js":"./portrait-score.js?v=portrait-score1","./score-overlay.js":"./score-overlay.js?v=portrait-score1","./production-speed.js":"./production-speed.js?v=portrait-score1"}}</script>
+<script type="module">
+import {LaserScene} from './photo-scene.js';
+import {makeAvatar} from './art.js';
+import {getToolPose,TOOL_TIMING as T,PRINT_SURFACE} from './scan-path.js';
+import {HANDLING_PHASES} from './handling-cycle.js';
+import {getLiveCamera,getShowcaseState} from './live-camera.js';
+import {INSPECTION_TOKEN} from './showcase-view.js';
+import {DEFAULT_SPEED,normalizeSpeed,cycleDuration,advanceProductionTime} from './production-speed.js';
+const params=new URLSearchParams(location.search),speed=normalizeSpeed(params.get('speed')??DEFAULT_SPEED);
+const samples=[['吸附',T.sourceGrip],['搬运',1.5],['雕刻',(T.scanStart+T.scanEnd)/2],['成品评分',T.displayStart+2.5],['皮带评分',T.beltIndexStart+.18],['收料',T.chuteEnd]];
+for(const [label,t] of samples){const a=document.createElement('a');a.textContent=label;a.href=`/tests/motion-preview.html?t=${t}&speed=${speed}`;document.getElementById('views').append(a);}
 function exportChunks(name,data){const host=document.getElementById('exports');host.querySelectorAll(`[data-export="${name}"]`).forEach(el=>el.remove());for(let i=0;i<data.length;i+=50000){const el=document.createElement('textarea');el.dataset.export=name;el.value=data.slice(i,i+50000);host.append(el);}}
 const video=document.getElementById('verified-preview');function videoInfo(){document.getElementById('video-info').textContent=JSON.stringify({width:video.videoWidth,height:video.videoHeight,duration:video.duration});}video.addEventListener('loadedmetadata',videoInfo);if(video.readyState>=1)videoInfo();
 const scene=new LaserScene(document.getElementById('scene'));
-const portrait=makeAvatar('运动验证',1);scene.prepare(portrait);
-const elapsed=Number(new URLSearchParams(location.search).get('t')||6);
-const status=document.getElementById('status');
-function render(t){scene.updateEngraving(t);scene.update(0,t);scene.canvas.dataset.diagnostics=JSON.stringify(scene.diagnostics());status.textContent=`${getToolPose(t).phase} / ${t}s`;}
-const sheet=document.createElement('canvas');sheet.width=1500;sheet.height=1080;const sc=sheet.getContext('2d');
-[.95,1.9,6,12.45,14.95,15.65].forEach((t,i)=>{render(t);const x=i%3*500,y=Math.floor(i/3)*540;sc.fillStyle='#141a15';sc.fillRect(x,y,500,540);sc.fillStyle='#e8ddba';sc.font='18px sans-serif';sc.fillText(`${t}s · ${scene.getState().phase}`,x+10,y+23);const scale=1080/941;sc.drawImage(scene.canvas,155*scale,650*scale,735*scale,750*scale,x,y+30,500,510);});exportChunks('sheet',sheet.toDataURL('image/png'));
-render(elapsed);document.getElementById('frame').value=scene.canvas.toDataURL('image/png');exportChunks('frame',document.getElementById('frame').value);
-document.getElementById('audit').onclick=()=>{
- const errors=[];const assert=(v,m)=>{if(!v)errors.push(m);};scene.reset();
+const portraits=[makeAvatar('近景验证',1),makeAvatar('第二位观众',2)];scene.prepare(portraits[0],{nickname:'近景验证'});
+const elapsed=Number(params.get('t')??T.displayStart+2.5),status=document.getElementById('status');
+function render(t,delta=0,now=t/speed){scene.updateEngraving(t);scene.update(delta,now);scene.canvas.dataset.diagnostics=JSON.stringify(scene.diagnostics());status.textContent=`${scene.trayState().busy?'换盘 · '+scene.trayState().phase:getToolPose(t).phase} / ${speed}× / ${cycleDuration(T.total,speed).toFixed(1)}秒每件`;}
+function advanceTray(seconds){for(let remaining=seconds;remaining>1e-8;){const dt=Math.min(.05,remaining);scene.advanceTrayExchange(dt);remaining-=dt;}}
+function fillCollector(count){scene.reset();for(let i=0;i<count;i++){scene.prepare(portraits[i%2],{nickname:`预置作品${i+1}`});scene.updateEngraving(T.total);scene.complete();}}
+function restorePreview(){
+ scene.reset();
+ if(params.has('exchange')){fillCollector(23);scene.prepare(portraits[0],{nickname:'近景验证'});scene.updateEngraving(T.total);scene.complete();advanceTray(Math.max(0,Number(params.get('exchange'))||0));render(T.total);}
+ else{scene.prepare(portraits[0],{nickname:'近景验证'});render(elapsed);}
+}
+for(const [label,time] of [['满盘',0],['满盘退出',.75],['空盘返回',2.8],['空盘归位',3.9]]){const a=document.createElement('a');a.textContent=label;a.href=`/tests/motion-preview.html?exchange=${time}`;document.getElementById('views').append(a);}
+const sheet=document.createElement('canvas');sheet.width=1500;sheet.height=1838;const sc=sheet.getContext('2d');
+samples.forEach(([label,t],i)=>{render(t);const x=i%3*500,y=Math.floor(i/3)*919;sc.fillStyle='#141a15';sc.fillRect(x,y,500,919);sc.fillStyle='#e8ddba';sc.font='20px sans-serif';sc.fillText(`${label} · ${(t/speed).toFixed(2)}s`,x+12,y+23);sc.drawImage(scene.canvas,x,y+30,500,889);});exportChunks('sheet',sheet.toDataURL('image/png'));
+restorePreview();exportChunks('frame',scene.canvas.toDataURL('image/png'));
+document.getElementById('measurements').textContent=JSON.stringify({speed,cycleSeconds:cycleDuration(T.total,speed),surface:PRINT_SURFACE,partPose:scene.inventory.active?scene.activePose(scene.getState()):null,camera:getLiveCamera(elapsed),machiningPortraitPixels:PRINT_SURFACE.rx*2*getLiveCamera(T.scanStart).scale,showcasePortraitPixels:INSPECTION_TOKEN.a*2,showcaseAspect:INSPECTION_TOKEN.d/INSPECTION_TOKEN.a,finishedDisplaySeconds:(T.displayEnd-T.displayStart)/speed,showcase:getShowcaseState(elapsed),rating:scene.assessment,tray:scene.trayState()});
+document.getElementById('audit').onclick=async()=>{
+ const errors=[],ratings=new Map(),assert=(v,m)=>{if(!v)errors.push(m);};scene.reset();
  for(let cycle=0;cycle<24;cycle++){
-  assert(scene.prepare(portrait),`cycle ${cycle} should begin`);
-  for(const t of [.95,1.9,2.7,4.2,6,8.95,10.55,11.2,12.45,14.5,15.3,15.65,16.2]){
+  assert(scene.prepare(portraits[cycle%2],{nickname:`第${cycle+1}位观众`}),`cycle ${cycle} should begin`);
+  const previous=ratings.get(cycle%2);if(previous!==undefined)assert(previous===scene.assessment.score,`unstable score ${cycle}`);ratings.set(cycle%2,scene.assessment.score);
+  for(const t of HANDLING_PHASES.map(p=>(p.start+p.end)/2)){
    render(t);const d=scene.diagnostics();assert(d.stockUnique,`duplicate ${cycle}/${t}`);assert(d.owners.length===cycle+4,`stock count ${cycle}/${t}`);
+   const records=[scene.inventory.active,...scene.inventory.belt].filter(Boolean);
+   for(const label of d.beltScores){const piece=records.find(p=>p.id===label.id);assert(piece?.assessment?.score===label.score,`wrong belt score ${cycle}/${t}/${label.id}`);}
+   if(d.phase==='belt-index')assert(d.beltScores.length===4,`missing belt score ${cycle}/${t}`);
+   if(d.held)assert(d.camera.detail===0,`carried stock close-up ${cycle}/${t}`);
+   if(d.showcase.visible){const head=getToolPose(t);assert(d.owners.find(p=>p.id===scene.inventory.active.id)?.location==='fixture',`unsupported inspection ${cycle}/${t}`);assert(!head.laser&&head.x===0&&head.y===0,`laser obstructs inspection ${cycle}/${t}`);assert(d.rating?.score===scene.assessment.score,`wrong rating ${cycle}/${t}`);}
+   else assert(d.rating===null,`rating outside inspection ${cycle}/${t}`);
   }
   scene.complete();assert(scene.collectorCount===cycle+1,`collector ${cycle}`);
+  status.textContent=`连续生产检查 ${cycle+1} / 25`;await new Promise(resolve=>setTimeout(resolve,0));
  }
- assert(!scene.canStart(),'full tray should block');assert(!scene.prepare(portrait),'full tray must refuse new material');
- scene.clearCollector();assert(scene.collectorCount===0&&scene.canStart(),'cleared tray should allow start');
- scene.prepare(portrait);render(15.3);const before=scene.outgoingPose(scene.getState()).pose;assert(scene.clearCollector()===null,'falling stock delays manual collection');const after=scene.outgoingPose(scene.getState()).pose;assert(before.x===after.x&&before.y===after.y,'clearing must not teleport falling stock');scene.complete();assert(scene.collectorCount===0,'deferred collection completes');
- document.getElementById('audit-result').textContent=JSON.stringify({passed:errors.length===0,cycles:25,errors});scene.reset();scene.prepare(portrait);render(elapsed);
+ assert(!scene.canStart(),'full tray should block');assert(!scene.prepare(portraits[0]),'full tray must refuse new material');
+ assert(scene.trayState().busy,'full tray starts automatic exchange');
+ assert(scene.requestTrayExchange().status==='busy','duplicate requests do not restart exchange');
+ advanceTray(1.4);assert(scene.collectorCount===24,'loaded stock remains while tray withdraws');
+ const stopped=scene.trayState().elapsed;scene.paused=true;scene.update(.1,100);assert(scene.trayState().elapsed===stopped,'pause must freeze tray');scene.paused=false;
+ advanceTray(.2);assert(scene.collectorCount===0&&scene.exchangedCount===24,'inventory transfers only offscreen');assert(!scene.canStart(),'empty tray is not ready until docked');
+ advanceTray(2.3);assert(scene.collectorCount===0&&scene.canStart(),'docked empty tray should allow start');
+ assert(scene.diagnostics().owners.length+scene.exchangedCount===27,'handoff conserves externally collected stock');
+ scene.prepare(portraits[0]);render(T.indexEnd+.45);const before=scene.outgoingPose(scene.getState()).pose;assert(scene.requestTrayExchange().status==='queued','falling stock delays tray exchange');const after=scene.outgoingPose(scene.getState()).pose;assert(before.x===after.x&&before.y===after.y,'request must not teleport falling stock');scene.complete();assert(scene.collectorCount===1&&scene.trayState().busy,'last falling piece stays in withdrawing tray');advanceTray(3.9);assert(scene.collectorCount===0&&scene.canStart(),'deferred exchange docks');
+ document.getElementById('audit-result').textContent=JSON.stringify({passed:errors.length===0,cycles:25,exchanges:scene.exchangeCount,exchangedCount:scene.exchangedCount,ratings:[...ratings.values()],errors});restorePreview();
 };
 document.getElementById('record').onclick=()=>{
- scene.reset();scene.prepare(portrait);const stream=scene.canvas.captureStream(30),chunks=[];
+ fillCollector(23);scene.prepare(portraits[0],{nickname:'近景验证'});const stream=scene.canvas.captureStream(0),track=stream.getVideoTracks()[0],chunks=[];
  const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9')?'video/webm;codecs=vp9':'video/webm';
  const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5000000});
  recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
- recorder.onstop=async()=>{const reader=new FileReader();reader.onload=()=>{document.getElementById('recording').value=reader.result;exportChunks('video',reader.result);status.textContent='录制完成';stream.getTracks().forEach(t=>t.stop());};reader.readAsDataURL(new Blob(chunks,{type:mime}));};
- recorder.start();const start=performance.now();let previous=start,cycle=0;
- function frame(now){const seconds=(now-start)/1000;if(seconds>=TOOL_TIMING.total*(cycle+1)&&cycle<1){render(TOOL_TIMING.total);scene.complete();scene.prepare(portrait);cycle++;}const t=Math.min(TOOL_TIMING.total,seconds-cycle*TOOL_TIMING.total);scene.updateEngraving(t);scene.update((now-previous)/1000,seconds);previous=now;if(seconds<TOOL_TIMING.total*2)requestAnimationFrame(frame);else recorder.stop();}
- requestAnimationFrame(frame);status.textContent='录制中…';
+ recorder.onstop=()=>{const reader=new FileReader();reader.onload=()=>{exportChunks('video',reader.result);status.textContent='录制完成';stream.getTracks().forEach(t=>t.stop());};reader.readAsDataURL(new Blob(chunks,{type:mime}));};
+ // A worker drives explicit captured frames even when the preview tab is
+ // occluded. It uses the same production-time integrator as the live page.
+ const workerUrl=URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),1000/30)'],{type:'text/javascript'}));
+ const timerWorker=new Worker(workerUrl);
+ recorder.start();const start=performance.now();let previous=start,cycle=0,t=0;
+ function frame(now){
+  const dt=(now-previous)/1000;previous=now;
+  if(scene.trayState().busy){render(T.total,dt,now/1000);track.requestFrame();if(!scene.trayState().busy){scene.prepare(portraits[cycle%2],{nickname:'第二位观众'});t=0;}return;}
+  t=Math.min(T.total,advanceProductionTime(t,dt,speed));render(t,dt,now/1000);track.requestFrame();
+  if(t>=T.total){scene.complete();cycle++;if(cycle>=2){document.getElementById('clock-info').textContent=JSON.stringify({speed,cycles:cycle,exchanges:scene.exchangeCount,seconds:(now-start)/1000,expectedSeconds:cycleDuration(T.total,speed)*2+3.8});timerWorker.terminate();URL.revokeObjectURL(workerUrl);recorder.stop();return;}if(!scene.trayState().busy){scene.prepare(portraits[cycle%2],{nickname:'第二位观众'});t=0;}}
+ }
+ timerWorker.onmessage=()=>frame(performance.now());frame(start);status.textContent='录制中…';
 };
 </script></html>

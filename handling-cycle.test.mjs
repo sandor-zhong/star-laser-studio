@@ -14,13 +14,32 @@ const sample = t => getHandlingState(t, points);
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.lift ?? 0) - (b.lift ?? 0));
 const atContact = (state, point) => assert.ok(distance(state.armTarget, { ...point, lift: 0 }) < 1e-6);
 
-test('one continuous 16.2 second cycle includes a four second print', () => {
-  assert.equal(H.total, 16.2);
-  assert.ok(Math.abs(H.scanEnd - H.scanStart - 4) < 1e-10);
+test('one continuous 18 second cycle reserves 4.5 seconds for the finished portrait', () => {
+  assert.equal(H.total, 18);
+  assert.ok(H.scanEnd > H.scanStart);
+  assert.equal(H.displayEnd - H.displayStart, 4.5);
+  assert.equal(H.displayStart, H.headReturnEnd);
+  assert.equal(H.displayEnd, H.unclampStart);
+  assert.ok(H.fixtureGrip > H.unclampEnd);
   assert.equal(HANDLING_PHASES[0].start, 0);
   assert.equal(HANDLING_PHASES.at(-1).end, H.total);
+  for (const phase of HANDLING_PHASES) assert.ok(phase.end > phase.start, `${phase.name} has no visible duration`);
   for (let i = 1; i < HANDLING_PHASES.length; i++) {
     assert.equal(HANDLING_PHASES[i - 1].end, HANDLING_PHASES[i].start);
+  }
+});
+
+test('the finished portrait is stationary with the laser parked during the display dwell', () => {
+  for (let t = H.displayStart; t < H.displayEnd; t += .01) {
+    const s = sample(t);
+    assert.equal(s.phase, 'show-finished');
+    assert.equal(s.partLocation, 'fixture');
+    assert.equal(s.clamped, 1);
+    assert.equal(s.carried, null);
+    assert.equal(s.vacuum, false);
+    assert.deepEqual(s.armTarget, { ...points.park, lift: 40 });
+    assert.equal(s.beltProgress, 0);
+    assert.equal(s.chuteProgress, 0);
   }
 });
 
