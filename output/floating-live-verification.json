@@ -1,0 +1,84 @@
+{
+  "unitTests": {
+    "tests": 73,
+    "passed": 73,
+    "failed": 0
+  },
+  "liveCanvas": {
+    "width": 1080,
+    "height": 1920,
+    "controlsVisible": false
+  },
+  "canvasAudit": {
+    "passed": true,
+    "cycles": 25,
+    "monitorChecks": 1137,
+    "connectorChecks": 578,
+    "laserPixels": {
+      "time": 6.68,
+      "tip": {
+        "x": 597.7132012237581,
+        "y": 225.02451931674597
+      },
+      "impact": {
+        "x": 616.5674000360364,
+        "y": 355.438069709783
+      },
+      "midpoint": {
+        "x": 607.1403006298972,
+        "y": 290.2312945132645
+      },
+      "running": {
+        "impact": {
+          "x": 615,
+          "y": 353,
+          "size": 5,
+          "cyanPixels": 25,
+          "peakChroma": 107
+        },
+        "beam": {
+          "x": 606,
+          "y": 289,
+          "size": 3,
+          "cyanPixels": 9,
+          "peakChroma": 149
+        }
+      },
+      "paused": {
+        "impact": {
+          "x": 615,
+          "y": 353,
+          "size": 5,
+          "cyanPixels": 0,
+          "peakChroma": -24
+        },
+        "beam": {
+          "x": 606,
+          "y": 289,
+          "size": 3,
+          "cyanPixels": 0,
+          "peakChroma": -15
+        }
+      }
+    },
+    "exchanges": 2,
+    "exchangedCount": 25,
+    "ratings": [
+      77,
+      62
+    ],
+    "errors": []
+  },
+  "recording": {
+    "path": "PREVIEW-floating-live-production-1080x1920.webm",
+    "bytes": 10464105,
+    "cycles": 2,
+    "exchanges": 1,
+    "currentTime": 26.291447,
+    "duration": 26.291447,
+    "error": null,
+    "height": 1920,
+    "readyState": 4,
+    "width": 1080
+  }
+}

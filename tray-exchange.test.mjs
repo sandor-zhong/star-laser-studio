@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getTrayExchangePose as pose, TRAY_EXCHANGE_TIMING as T, TRAY_TRAVEL } from './tray-exchange.js';
+import { getLiveCamera, LIVE_SIZE } from './live-camera.js';
 
 const close = (a, b, tolerance = 1e-7) => assert.ok(Math.abs(a - b) <= tolerance, `${a} differs from ${b}`);
 
@@ -24,9 +25,11 @@ test('a loaded tray withdraws, waits outside, returns empty and docks before pro
 
 test('inventory handoff and the loaded-to-empty change both happen with every tray item out of frame', () => {
   // Bounds include the tray walls and every medal supported by its bed.
-  const trayLeft = 550;
+  const trayLeft = 548;
   const contentsLeft = 570;
-  const cameraRight = 909;
+  const camera = getLiveCamera();
+  const cameraRight = (LIVE_SIZE.width - camera.tx) / camera.scale;
+  close(cameraRight, 970.5);
   const firstTransfer = pose(T.withdrawEnd);
   const emptyReturn = pose(T.handoffEnd);
   for (const sample of [firstTransfer, emptyReturn]) {

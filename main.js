@@ -228,7 +228,7 @@ function updateProgress() {
     'release-fixture':'释放毛坯','retract-from-fixture':'吸盘退回',
     'park-for-print':'取料臂避让','clamp':'定位座真空吸附',
     'head-load':'雕刻头定位','scan':'逐行雕刻',
-    'head-retract':'关光抬头','head-return':'雕刻头归位','show-finished':'成品展示 · 作品效果评分',
+    'head-retract':'关光抬头','head-return':'雕刻头归位','show-finished':'监视屏作品评分',
     'unclamp':'定位座解除吸附','approach-fixture':'取料臂接近成品',
     'lower-for-pickup':'吸盘下降','grip-finished':'吸附成品',
     'lift-finished':'提起成品','transfer-to-belt':'移向传送带',

@@ -1,0 +1,100 @@
+{
+  "nodeTests": 77,
+  "passed": true,
+  "cycles": 25,
+  "monitorChecks": 1137,
+  "connectorChecks": 578,
+  "laserPixels": {
+    "time": 6.68,
+    "tip": {
+      "x": 590.0739197820295,
+      "y": 186.14696409727358
+    },
+    "impact": {
+      "x": 637.3752282385155,
+      "y": 333.84560155679446
+    },
+    "midpoint": {
+      "x": 613.7245740102726,
+      "y": 259.996282827034
+    },
+    "running": {
+      "core": {
+        "x": 635,
+        "y": 332,
+        "size": 5,
+        "innerRadius": 0,
+        "sampledPixels": 25,
+        "cyanPixels": 1,
+        "whitePixels": 23,
+        "peakChroma": 26
+      },
+      "halo": {
+        "x": 621,
+        "y": 318,
+        "size": 33,
+        "innerRadius": 8,
+        "sampledPixels": 604,
+        "cyanPixels": 470,
+        "whitePixels": 0,
+        "peakChroma": 189
+      },
+      "beam": {
+        "x": 613,
+        "y": 259,
+        "size": 3,
+        "innerRadius": 0,
+        "sampledPixels": 9,
+        "cyanPixels": 9,
+        "whitePixels": 0,
+        "peakChroma": 137
+      }
+    },
+    "paused": {
+      "core": {
+        "x": 635,
+        "y": 332,
+        "size": 5,
+        "innerRadius": 0,
+        "sampledPixels": 25,
+        "cyanPixels": 0,
+        "whitePixels": 0,
+        "peakChroma": -23
+      },
+      "halo": {
+        "x": 621,
+        "y": 318,
+        "size": 33,
+        "innerRadius": 8,
+        "sampledPixels": 604,
+        "cyanPixels": 0,
+        "whitePixels": 66,
+        "peakChroma": 0
+      },
+      "beam": {
+        "x": 613,
+        "y": 259,
+        "size": 3,
+        "innerRadius": 0,
+        "sampledPixels": 9,
+        "cyanPixels": 0,
+        "whitePixels": 0,
+        "peakChroma": -14
+      }
+    }
+  },
+  "exchanges": 2,
+  "exchangedCount": 25,
+  "ratings": [
+    77,
+    62
+  ],
+  "errors": [],
+  "recording": {
+    "speed": 1.8,
+    "cycles": 2,
+    "exchanges": 1,
+    "seconds": 28.74310000000056,
+    "expectedSeconds": 23.8
+  }
+}

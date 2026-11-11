@@ -1,69 +1,172 @@
 <!doctype html>
-<html lang="zh-CN"><meta charset="utf-8"><base href="/"><meta name="viewport" content="width=device-width,initial-scale=1"><title>直播头像近景验证</title>
+<html lang="zh-CN"><meta charset="utf-8"><base href="/"><meta name="viewport" content="width=device-width,initial-scale=1"><title>固定整机与悬浮实况窗验证</title>
 <style>body{margin:0;background:#151915;color:#ddd;font:12px sans-serif}nav{position:fixed;top:8px;left:8px;z-index:2;background:#152018e8;padding:8px;border-radius:5px;max-width:90vw}nav a,nav button{margin:3px;color:#ddd}nav button{background:#32452d;border:1px solid #87936b;padding:7px}#scene{position:absolute;inset:0;display:grid;place-items:center}canvas{width:min(100vw,56.25vh);height:auto;display:block}</style>
 <div id="scene"></div><nav><span id="views"></span><button id="record">录制生产与换盘</button><button id="audit">检查连续生产</button><span id="status"></span></nav>
 <div id="exports" hidden></div><output id="audit-result" hidden></output><output id="measurements" hidden></output><output id="clock-info" hidden></output>
-<video id="verified-preview" src="/PREVIEW-realism-production-1080x1920.webm" preload="metadata" hidden></video><output id="video-info" hidden></output>
-<script type="importmap">{"imports":{"./cell-inventory.js":"./cell-inventory.js?v=belt-scores1","./coin-material.js":"./coin-material.js?v=realism3","./tray-exchange.js":"./tray-exchange.js?v=realism1","./art.js":"./art.js?v=portrait-score1","./photo-scene.js":"./photo-scene.js?v=realism2","./scan-path.js":"./scan-path.js?v=realism1","./live-camera.js":"./live-camera.js?v=portrait-score1","./handling-cycle.js":"./handling-cycle.js?v=portrait-score1","./showcase-view.js":"./showcase-view.js?v=portrait-score1","./portrait-score.js":"./portrait-score.js?v=portrait-score1","./score-overlay.js":"./score-overlay.js?v=portrait-score1","./production-speed.js":"./production-speed.js?v=portrait-score1"}}</script>
+<video id="verified-preview" src="/PREVIEW-laser-macro-production-1080x1920.webm" preload="metadata" hidden></video><output id="video-info" hidden></output>
+<script type="importmap">{"imports":{"./cell-inventory.js":"./cell-inventory.js?v=belt-scores1","./coin-material.js":"./coin-material.js?v=realism3","./tray-exchange.js":"./tray-exchange.js?v=realism1","./art.js":"./art.js?v=portrait-score1","./photo-scene.js":"./photo-scene.js?v=laser-macro2","./scan-path.js":"./scan-path.js?v=realism1","./live-camera.js":"./live-camera.js?v=laser-macro2","./monitor-state.js":"./monitor-state.js?v=laser-macro2","./monitor-view.js":"./monitor-view.js?v=laser-macro2","./monitor-overlay.js":"./monitor-overlay.js?v=laser-macro2","./laser-effects.js":"./laser-effects.js?v=laser-macro2","./handling-cycle.js":"./handling-cycle.js?v=portrait-score1","./portrait-score.js":"./portrait-score.js?v=portrait-score1","./score-overlay.js":"./score-overlay.js?v=portrait-score1","./production-speed.js":"./production-speed.js?v=portrait-score1"}}</script>
 <script type="module">
 import {LaserScene} from './photo-scene.js';
 import {makeAvatar} from './art.js';
-import {getToolPose,TOOL_TIMING as T,PRINT_SURFACE} from './scan-path.js';
+import {getToolPose,TOOL_TIMING as T,PRINT_SURFACE,LASER_ORIGIN} from './scan-path.js';
 import {HANDLING_PHASES} from './handling-cycle.js';
-import {getLiveCamera,getShowcaseState} from './live-camera.js';
-import {INSPECTION_TOKEN} from './showcase-view.js';
+import {getLiveCamera} from './live-camera.js';
+import {getMonitorState} from './monitor-state.js';
+import {projectMonitorPose,projectMonitorTool,monitorPoseVisible} from './monitor-view.js';
 import {DEFAULT_SPEED,normalizeSpeed,cycleDuration,advanceProductionTime} from './production-speed.js';
 const params=new URLSearchParams(location.search),speed=normalizeSpeed(params.get('speed')??DEFAULT_SPEED);
-const samples=[['吸附',T.sourceGrip],['搬运',1.5],['雕刻',(T.scanStart+T.scanEnd)/2],['成品评分',T.displayStart+2.5],['皮带评分',T.beltIndexStart+.18],['收料',T.chuteEnd]];
+const samples=[['吸附',T.sourceGrip],['搬运',1.5],['浮窗同步雕刻',(T.scanStart+T.scanEnd)/2],['浮窗成品评分',T.displayStart+2.5],['皮带评分',T.beltIndexStart+.18],['收料',T.chuteEnd]];
 for(const [label,t] of samples){const a=document.createElement('a');a.textContent=label;a.href=`/tests/motion-preview.html?t=${t}&speed=${speed}`;document.getElementById('views').append(a);}
 function exportChunks(name,data){const host=document.getElementById('exports');host.querySelectorAll(`[data-export="${name}"]`).forEach(el=>el.remove());for(let i=0;i<data.length;i+=50000){const el=document.createElement('textarea');el.dataset.export=name;el.value=data.slice(i,i+50000);host.append(el);}}
 const video=document.getElementById('verified-preview');function videoInfo(){document.getElementById('video-info').textContent=JSON.stringify({width:video.videoWidth,height:video.videoHeight,duration:video.duration});}video.addEventListener('loadedmetadata',videoInfo);if(video.readyState>=1)videoInfo();
 const scene=new LaserScene(document.getElementById('scene'));
-const portraits=[makeAvatar('近景验证',1),makeAvatar('第二位观众',2)];scene.prepare(portraits[0],{nickname:'近景验证'});
+const portraits=[makeAvatar('浮窗同步验证',1),makeAvatar('第二位观众',2)];scene.prepare(portraits[0],{nickname:'陈勇'});
 const elapsed=Number(params.get('t')??T.displayStart+2.5),status=document.getElementById('status');
 function render(t,delta=0,now=t/speed){scene.updateEngraving(t);scene.update(delta,now);scene.canvas.dataset.diagnostics=JSON.stringify(scene.diagnostics());status.textContent=`${scene.trayState().busy?'换盘 · '+scene.trayState().phase:getToolPose(t).phase} / ${speed}× / ${cycleDuration(T.total,speed).toFixed(1)}秒每件`;}
 function advanceTray(seconds){for(let remaining=seconds;remaining>1e-8;){const dt=Math.min(.05,remaining);scene.advanceTrayExchange(dt);remaining-=dt;}}
 function fillCollector(count){scene.reset();for(let i=0;i<count;i++){scene.prepare(portraits[i%2],{nickname:`预置作品${i+1}`});scene.updateEngraving(T.total);scene.complete();}}
 function restorePreview(){
  scene.reset();
- if(params.has('exchange')){fillCollector(23);scene.prepare(portraits[0],{nickname:'近景验证'});scene.updateEngraving(T.total);scene.complete();advanceTray(Math.max(0,Number(params.get('exchange'))||0));render(T.total);}
- else{scene.prepare(portraits[0],{nickname:'近景验证'});render(elapsed);}
+ if(params.has('exchange')){fillCollector(23);scene.prepare(portraits[0],{nickname:'陈勇'});scene.updateEngraving(T.total);scene.complete();advanceTray(Math.max(0,Number(params.get('exchange'))||0));render(T.total);}
+ else{scene.prepare(portraits[0],{nickname:'陈勇'});render(elapsed);}
 }
 for(const [label,time] of [['满盘',0],['满盘退出',.75],['空盘返回',2.8],['空盘归位',3.9]]){const a=document.createElement('a');a.textContent=label;a.href=`/tests/motion-preview.html?exchange=${time}`;document.getElementById('views').append(a);}
 const sheet=document.createElement('canvas');sheet.width=1500;sheet.height=1838;const sc=sheet.getContext('2d');
 samples.forEach(([label,t],i)=>{render(t);const x=i%3*500,y=Math.floor(i/3)*919;sc.fillStyle='#141a15';sc.fillRect(x,y,500,919);sc.fillStyle='#e8ddba';sc.font='20px sans-serif';sc.fillText(`${label} · ${(t/speed).toFixed(2)}s`,x+12,y+23);sc.drawImage(scene.canvas,x,y+30,500,889);});exportChunks('sheet',sheet.toDataURL('image/png'));
 restorePreview();exportChunks('frame',scene.canvas.toDataURL('image/png'));
-document.getElementById('measurements').textContent=JSON.stringify({speed,cycleSeconds:cycleDuration(T.total,speed),surface:PRINT_SURFACE,partPose:scene.inventory.active?scene.activePose(scene.getState()):null,camera:getLiveCamera(elapsed),machiningPortraitPixels:PRINT_SURFACE.rx*2*getLiveCamera(T.scanStart).scale,showcasePortraitPixels:INSPECTION_TOKEN.a*2,showcaseAspect:INSPECTION_TOKEN.d/INSPECTION_TOKEN.a,finishedDisplaySeconds:(T.displayEnd-T.displayStart)/speed,showcase:getShowcaseState(elapsed),rating:scene.assessment,tray:scene.trayState()});
+const measured=scene.diagnostics(),monitorScreen=measured.monitor?.screen;
+document.getElementById('measurements').textContent=JSON.stringify({speed,cycleSeconds:cycleDuration(T.total,speed),surface:PRINT_SURFACE,partPose:scene.inventory.active?scene.activePose(scene.getState()):null,camera:measured.camera,physicalPortraitPixels:PRINT_SURFACE.rx*2*measured.camera.scale,monitor:measured.monitor,monitorStyle:measured.monitor?.style,connector:measured.monitor?.connector,monitorWidthFraction:monitorScreen?monitorScreen.width/scene.canvas.width:null,monitorHeightFraction:monitorScreen?monitorScreen.height/scene.canvas.height:null,finishedDisplaySeconds:(T.displayEnd-T.displayStart)/speed,tray:scene.trayState()});
 document.getElementById('audit').onclick=async()=>{
- const errors=[],ratings=new Map(),assert=(v,m)=>{if(!v)errors.push(m);};scene.reset();
+ const errors=[],ratings=new Map(),assert=(v,m)=>{if(!v)errors.push(m);},fixedCamera=getLiveCamera();scene.reset();
+ let monitorChecks=0,connectorChecks=0;
+ const checkMonitor=(t,label)=>{
+  const d=scene.diagnostics(),m=d.monitor,active=scene.inventory.active,head=getToolPose(t);
+  assert(d.camera.detail===0,`moving main camera ${label}`);
+  assert(d.camera.scale===1.08&&d.camera.ty===260,`fixed camera framing ${label}`);
+  for(const key of ['scale','tx','ty','x','y','zoom'])assert(Math.abs(d.camera[key]-fixedCamera[key])<1e-9,`main camera ${key} changed ${label}`);
+  assert(Boolean(m),`missing monitor diagnostics ${label}`);if(!m)return d;
+  monitorChecks++;
+  assert(m.style==='floating',`wrong live window style ${label}`);
+  assert(m.feed?.width===1024&&m.feed?.height===512,`monitor feed dimensions ${label}`);
+  const s=m.screen;assert(s?.width>0&&s?.height>0&&s.x>=0&&s.y>=0&&s.x+s.width<=scene.canvas.width&&s.y+s.height<=scene.canvas.height,`monitor outside live frame ${label}`);
+  assert(s?.x===135&&s?.y===205&&s?.width===810&&s?.height===395,`floating window placement ${label}`);
+  const expected=getMonitorState(t,active,{trayBusy:scene.trayState().busy,paused:scene.paused});
+  for(const key of ['phase','partId','partLocation','score','nickname','paused'])assert(m[key]===expected[key],`monitor ${key} clock/record mismatch ${label}`);
+  for(const key of ['progress','scoreProgress'])assert(Math.abs(m[key]-expected[key])<1e-9,`monitor ${key} timing mismatch ${label}`);
+  const projectedVisible=Boolean(active&&expected.workpieceVisible&&monitorPoseVisible(projectMonitorPose(scene.activePose(scene.getState()))));
+  assert(m.workpieceVisible===projectedVisible,`monitor workpiece clipping mismatch ${label}`);
+  assert(m.portraitVisible===Boolean(expected.portraitVisible&&projectedVisible),`monitor portrait clipping mismatch ${label}`);
+  const connector=m.connector,shouldConnect=Boolean(active&&expected.partLocation==='fixture');
+  assert(connector?.visible===shouldConnect,`connector visibility mismatch ${label}`);
+  const finitePoint=p=>Number.isFinite(p?.x)&&Number.isFinite(p?.y);
+  const laser=d.monitorLaser,tool=projectMonitorTool(getToolPose(active?t:T.total));
+  assert(Boolean(laser),`missing monitor laser diagnostics ${label}`);
+  assert(laser?.on===Boolean(active&&head.laser&&!scene.paused),`monitor laser on/off mismatch ${label}`);
+  assert(finitePoint(laser?.tip)&&Math.abs(laser.tip.x-tool.tip.x)<1e-8&&Math.abs(laser.tip.y-tool.tip.y)<1e-8,`monitor nozzle uses a different camera ${label}`);
+  if(tool.impact)assert(finitePoint(laser?.impact)&&Math.abs(laser.impact.x-tool.impact.x)<1e-8&&Math.abs(laser.impact.y-tool.impact.y)<1e-8,`monitor laser impact uses a different camera ${label}`);
+  else assert(laser?.impact===null,`monitor laser retains an old impact ${label}`);
+  assert(finitePoint(connector?.from)&&finitePoint(connector?.to),`invalid connector coordinates ${label}`);
+  if(finitePoint(connector?.from)&&finitePoint(connector?.to)&&s){
+   assert(Math.abs(connector.from.x-(s.x+s.width*.87))<1e-8&&Math.abs(connector.from.y-(s.y+s.height))<1e-8,`connector detached from floating window ${label}`);
+   const target={x:(LASER_ORIGIN.x+head.x+34)*d.camera.scale+d.camera.tx,y:(LASER_ORIGIN.nozzleY+head.y-head.lift-42)*d.camera.scale+d.camera.ty};
+   assert(Math.abs(connector.to.x-target.x)<1e-8&&Math.abs(connector.to.y-target.y)<1e-8,`connector does not follow head anchor ${label}`);
+   if(connector.visible)connectorChecks++;
+  }
+  assert(m.progress>=0&&m.progress<=1&&m.scoreProgress>=0&&m.scoreProgress<=1,`invalid monitor progress ${label}`);
+  assert(!m.portraitVisible||m.workpieceVisible,`portrait without physical workpiece ${label}`);
+  if(active){
+   const owner=d.owners.find(p=>p.id===active.id);
+   assert(m.partId===active.id,`monitor points to another workpiece ${label}`);
+   assert(m.partLocation===owner?.location,`monitor physical location mismatch ${label}`);
+   assert(Math.abs(m.progress-head.reveal)<1e-9,`monitor engraving clock mismatch ${label}`);
+   if(t<T.displayStart)assert(m.score===null,`score revealed before engraving finished ${label}`);
+   if(m.score!==null)assert(m.score===active.assessment?.score,`monitor score belongs to another workpiece ${label}`);
+   if(m.portraitVisible)assert(['fixture','gripper'].includes(owner?.location)&&m.progress>0,`unsupported monitor portrait ${label}`);
+   if(owner?.location==='belt')assert(!m.portraitVisible&&!m.workpieceVisible,`monitor retains belt workpiece ${label}`);
+   if(t>=T.displayStart&&t<T.displayEnd){
+    assert(m.phase==='rating',`missing monitor rating phase ${label}`);
+    assert(owner?.location==='fixture',`rating after physical workpiece removed ${label}`);
+    assert(m.portraitVisible&&m.workpieceVisible,`rating has no visible fixture workpiece ${label}`);
+    assert(!head.laser&&head.x===0&&head.y===0,`head obstructs rating ${label}`);
+    assert(m.score===active.assessment?.score,`wrong rating ${label}`);
+   }
+  }else{
+   assert(m.partId===null&&!m.portraitVisible&&!m.workpieceVisible,`stale monitor image without active stock ${label}`);
+   assert(m.score===null&&m.progress===0,`stale monitor score or progress ${label}`);
+   assert(m.phase===(scene.trayState().busy?'tray-exchange':'idle'),`wrong inactive monitor phase ${label}`);
+  }
+  // The monitor references a physical record, but adds no owner or inventory.
+  assert(d.stockUnique,`screen duplicated physical inventory ${label}`);
+  return d;
+ };
+ render(0);checkMonitor(0,'initial idle');
+ const auditTimes=[...new Set([...HANDLING_PHASES.map(p=>(p.start+p.end)/2),...[T.fixtureRelease,T.scanStart,T.scanEnd,T.displayStart,T.fixtureGrip,T.beltRelease].flatMap(t=>[t-1e-5,t,t+1e-5])])].sort((a,b)=>a-b);
  for(let cycle=0;cycle<24;cycle++){
   assert(scene.prepare(portraits[cycle%2],{nickname:`第${cycle+1}位观众`}),`cycle ${cycle} should begin`);
   const previous=ratings.get(cycle%2);if(previous!==undefined)assert(previous===scene.assessment.score,`unstable score ${cycle}`);ratings.set(cycle%2,scene.assessment.score);
-  for(const t of HANDLING_PHASES.map(p=>(p.start+p.end)/2)){
-   render(t);const d=scene.diagnostics();assert(d.stockUnique,`duplicate ${cycle}/${t}`);assert(d.owners.length===cycle+4,`stock count ${cycle}/${t}`);
+  for(const t of auditTimes){
+   render(t);const d=checkMonitor(t,`${cycle}/${t}`);assert(d.stockUnique,`duplicate ${cycle}/${t}`);assert(d.owners.length===cycle+4,`stock count ${cycle}/${t}`);
    const records=[scene.inventory.active,...scene.inventory.belt].filter(Boolean);
    for(const label of d.beltScores){const piece=records.find(p=>p.id===label.id);assert(piece?.assessment?.score===label.score,`wrong belt score ${cycle}/${t}/${label.id}`);}
    if(d.phase==='belt-index')assert(d.beltScores.length===4,`missing belt score ${cycle}/${t}`);
-   if(d.held)assert(d.camera.detail===0,`carried stock close-up ${cycle}/${t}`);
-   if(d.showcase.visible){const head=getToolPose(t);assert(d.owners.find(p=>p.id===scene.inventory.active.id)?.location==='fixture',`unsupported inspection ${cycle}/${t}`);assert(!head.laser&&head.x===0&&head.y===0,`laser obstructs inspection ${cycle}/${t}`);assert(d.rating?.score===scene.assessment.score,`wrong rating ${cycle}/${t}`);}
-   else assert(d.rating===null,`rating outside inspection ${cycle}/${t}`);
   }
-  scene.complete();assert(scene.collectorCount===cycle+1,`collector ${cycle}`);
+  scene.complete();render(T.total);checkMonitor(T.total,`completed ${cycle}`);assert(scene.collectorCount===cycle+1,`collector ${cycle}`);
   status.textContent=`连续生产检查 ${cycle+1} / 25`;await new Promise(resolve=>setTimeout(resolve,0));
  }
  assert(!scene.canStart(),'full tray should block');assert(!scene.prepare(portraits[0]),'full tray must refuse new material');
  assert(scene.trayState().busy,'full tray starts automatic exchange');
  assert(scene.requestTrayExchange().status==='busy','duplicate requests do not restart exchange');
- advanceTray(1.4);assert(scene.collectorCount===24,'loaded stock remains while tray withdraws');
- const stopped=scene.trayState().elapsed;scene.paused=true;scene.update(.1,100);assert(scene.trayState().elapsed===stopped,'pause must freeze tray');scene.paused=false;
- advanceTray(.2);assert(scene.collectorCount===0&&scene.exchangedCount===24,'inventory transfers only offscreen');assert(!scene.canStart(),'empty tray is not ready until docked');
- advanceTray(2.3);assert(scene.collectorCount===0&&scene.canStart(),'docked empty tray should allow start');
+ advanceTray(1.4);render(T.total);checkMonitor(T.total,'loaded tray withdrawing');assert(scene.collectorCount===24,'loaded stock remains while tray withdraws');
+ const stopped=scene.trayState().elapsed;scene.paused=true;scene.update(.1,100);assert(scene.trayState().elapsed===stopped,'pause must freeze tray');checkMonitor(T.total,'paused tray exchange');assert(scene.diagnostics().monitor?.paused===true,'monitor must reflect pause');scene.paused=false;
+ advanceTray(.2);render(T.total);checkMonitor(T.total,'inventory handed off');assert(scene.collectorCount===0&&scene.exchangedCount===24,'inventory transfers only offscreen');assert(!scene.canStart(),'empty tray is not ready until docked');
+ advanceTray(2.3);render(T.total);checkMonitor(T.total,'empty tray docked');assert(scene.collectorCount===0&&scene.canStart(),'docked empty tray should allow start');
  assert(scene.diagnostics().owners.length+scene.exchangedCount===27,'handoff conserves externally collected stock');
- scene.prepare(portraits[0]);render(T.indexEnd+.45);const before=scene.outgoingPose(scene.getState()).pose;assert(scene.requestTrayExchange().status==='queued','falling stock delays tray exchange');const after=scene.outgoingPose(scene.getState()).pose;assert(before.x===after.x&&before.y===after.y,'request must not teleport falling stock');scene.complete();assert(scene.collectorCount===1&&scene.trayState().busy,'last falling piece stays in withdrawing tray');advanceTray(3.9);assert(scene.collectorCount===0&&scene.canStart(),'deferred exchange docks');
- document.getElementById('audit-result').textContent=JSON.stringify({passed:errors.length===0,cycles:25,exchanges:scene.exchangeCount,exchangedCount:scene.exchangedCount,ratings:[...ratings.values()],errors});restorePreview();
+ scene.prepare(portraits[0]);render(T.indexEnd+.45);checkMonitor(T.indexEnd+.45,'falling workpiece');const before=scene.outgoingPose(scene.getState()).pose;assert(scene.requestTrayExchange().status==='queued','falling stock delays tray exchange');const after=scene.outgoingPose(scene.getState()).pose;assert(before.x===after.x&&before.y===after.y,'request must not teleport falling stock');scene.complete();assert(scene.collectorCount===1&&scene.trayState().busy,'last falling piece stays in withdrawing tray');advanceTray(3.9);render(T.total);checkMonitor(T.total,'deferred exchange docked');assert(scene.collectorCount===0&&scene.canStart(),'deferred exchange docks');
+ // Read pixels once per visual condition, after the production/stock audit.
+ // Pausing the identical portrait, scan position and animation time provides
+ // the material-color control: only the laser should add a white-hot core,
+ // cyan halo and illuminated beam at these points.
+ let laserPixels=null;
+ if(scene.prepare(portraits[0],{nickname:'激光像素检查'})){
+  const laserTime=6.68,laserNow=laserTime/speed,projected=projectMonitorTool(getToolPose(laserTime));
+  const midpoint=projected.impact?{x:(projected.tip.x+projected.impact.x)/2,y:(projected.tip.y+projected.impact.y)/2}:null;
+  const samplePixels=(point,radius,{greenGap=15,blueGap=10,innerRadius=0}={})=>{
+   if(!point||!Number.isFinite(point.x)||!Number.isFinite(point.y))return null;
+   const size=radius*2+1,x=Math.round(point.x)-radius,y=Math.round(point.y)-radius;
+   if(x<0||y<0||x+size>scene.monitorCanvas.width||y+size>scene.monitorCanvas.height)return null;
+   const {data}=scene.monitorCtx.getImageData(x,y,size,size);let cyanPixels=0,whitePixels=0,peakChroma=-255,sampledPixels=0;
+   for(let i=0;i<data.length;i+=4){
+    const pixel=i/4,dx=pixel%size-radius,dy=Math.floor(pixel/size)-radius,distance=Math.hypot(dx,dy);
+    if(innerRadius>0&&(distance<innerRadius||distance>radius))continue;
+    const r=data[i],g=data[i+1],b=data[i+2];
+    if(g>r+greenGap&&b>r+blueGap)cyanPixels++;
+    if(r>=235&&g>=235&&b>=235)whitePixels++;
+    peakChroma=Math.max(peakChroma,Math.min(g-r,b-r));sampledPixels++;
+   }
+   return {x,y,size,innerRadius,sampledPixels,cyanPixels,whitePixels,peakChroma};
+  };
+  const readLaserPixels=()=>({core:samplePixels(projected.impact,2),halo:samplePixels(projected.impact,16,{innerRadius:8}),beam:samplePixels(midpoint,1,{greenGap:20,blueGap:15})});
+  try{
+   scene.paused=false;render(laserTime,0,laserNow);const runningDiagnostic=checkMonitor(laserTime,'visible laser pixels'),running=readLaserPixels();
+   assert(runningDiagnostic.monitorLaser?.on===true,'chosen pixel frame must have its laser on');
+   assert(running.core?.whitePixels>0,'laser contact has no white-hot core in the actual Canvas');
+   assert(running.halo?.cyanPixels>0,'laser contact has no cyan halo outside its white-hot core');
+   assert(running.beam?.cyanPixels>0,'laser beam is not visibly cyan between nozzle and impact');
+   scene.paused=true;render(laserTime,0,laserNow);const pausedDiagnostic=checkMonitor(laserTime,'paused laser pixels'),paused=readLaserPixels();
+   assert(pausedDiagnostic.monitorLaser?.on===false,'paused laser still reports on');
+   assert(paused.halo?.cyanPixels===0,'paused laser halo remains visible or material control contains cyan');
+   assert(paused.beam?.cyanPixels===0,'paused laser beam remains visible or material control contains cyan');
+   assert(running.core?.whitePixels>paused.core?.whitePixels,'white-hot core is not distinct from the same unlit material');
+   assert(running.halo?.cyanPixels>paused.halo?.cyanPixels&&running.beam?.cyanPixels>paused.beam?.cyanPixels,'laser cyan is not distinct from the same unlit material');
+   laserPixels={time:laserTime,tip:projected.tip,impact:projected.impact,midpoint,running,paused};
+  }catch(error){assert(false,`laser pixel read failed: ${error.message}`);}
+  finally{scene.paused=false;}
+ }else assert(false,'unable to prepare the laser visibility sample');
+ assert(connectorChecks>0,'head connector was never visible over the fixture');
+ document.getElementById('audit-result').textContent=JSON.stringify({passed:errors.length===0,cycles:25,monitorChecks,connectorChecks,laserPixels,exchanges:scene.exchangeCount,exchangedCount:scene.exchangedCount,ratings:[...ratings.values()],errors});restorePreview();
 };
 document.getElementById('record').onclick=()=>{
- fillCollector(23);scene.prepare(portraits[0],{nickname:'近景验证'});const stream=scene.canvas.captureStream(0),track=stream.getVideoTracks()[0],chunks=[];
+ fillCollector(23);scene.prepare(portraits[0],{nickname:'陈勇'});const stream=scene.canvas.captureStream(0),track=stream.getVideoTracks()[0],chunks=[];
  const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9')?'video/webm;codecs=vp9':'video/webm';
  const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5000000});
  recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};

@@ -1,0 +1,16 @@
+{
+  "layout": "fixed full machine with a physical wall monitor",
+  "liveCanvas": { "width": 1080, "height": 1920, "controlsVisible": false },
+  "unitTests": { "tests": 69, "passed": 69, "failed": 0 },
+  "canvasAudit": { "passed": true, "cycles": 25, "monitorChecks": 1133, "exchanges": 2, "exchangedCount": 25, "errors": [] },
+  "recording": {
+    "path": "PREVIEW-wall-monitor-production-1080x1920.webm",
+    "width": 1080,
+    "height": 1920,
+    "durationSeconds": 26.264609,
+    "cycles": 2,
+    "exchanges": 1,
+    "bytes": 11299603,
+    "browserPlaybackError": null
+  }
+}

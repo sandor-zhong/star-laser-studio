@@ -5,11 +5,13 @@ import { BELT, BELT_SLOTS, BELT_LOAD, beltCoin } from './belt-plane.js';
 import { CellInventory } from './cell-inventory.js';
 import { drawPickArm } from './pick-arm.js';
 import { getLiveCamera, getShowcaseState } from './live-camera.js';
-import { INSPECTION_CAMERA, INSPECTION_TOKEN, INSPECTION_THICKNESS } from './showcase-view.js';
 import { analyzePortrait } from './portrait-score.js';
-import { drawScoreOverlay } from './score-overlay.js';
 import { drawMetalCoin } from './coin-material.js';
 import { getTrayExchangePose } from './tray-exchange.js';
+import { getMonitorState } from './monitor-state.js';
+import { drawMonitorOverlay } from './monitor-overlay.js';
+import { drawLaserContact } from './laser-effects.js';
+import { MONITOR_SCREEN, MONITOR_RADIUS, MONITOR_FEED, MONITOR_THICKNESS, projectMonitorPose, projectMonitorTool, monitorPoseVisible } from './monitor-view.js';
 
 export const LIVE_WIDTH=1080, LIVE_HEIGHT=1920;
 const W=941,H=1672;
@@ -19,16 +21,34 @@ const assessPortrait=portrait=>{
  const c=canvas.getContext('2d',{willReadFrequently:true});c.drawImage(portrait,0,0,320,320);
  return analyzePortrait(c.getImageData(0,0,320,320));
 };
-const [background,reference,spindle,inspectionPhoto,machiningPhoto,trayPhoto]=await Promise.all([
+const [background,reference,spindle,trayPhoto]=await Promise.all([
  loadImage('./assets/workcell-exchange-base-v1.png'),loadImage('./output/structure-concept-v3.png'),
  loadImage('./assets/spindle-layer.png'),
- loadImage('./assets/portrait-inspection-camera-v1.png'),
- loadImage('./assets/machining-detail-plate-v1.png'),
  loadImage('./assets/receiving-tray-layer-v1.png'),
 ]);
-const machiningCamera=getLiveCamera(TOOL_TIMING.scanStart);
-const machiningScale=LIVE_WIDTH/machiningPhoto.width;
-const machiningTop=1108-992*machiningScale;
+// A shallow-focus workshop background leaves the macro view entirely to the
+// tilted workpiece and focusing optics. The physical nest stays in the main view.
+const monitorPlate=document.createElement('canvas');monitorPlate.width=MONITOR_FEED.width;monitorPlate.height=MONITOR_FEED.height;
+const plateContext=monitorPlate.getContext('2d');
+plateContext.fillStyle='#071a1d';plateContext.fillRect(0,0,MONITOR_FEED.width,MONITOR_FEED.height);
+plateContext.filter='blur(22px)';plateContext.drawImage(background,40,0,830,240,-32,-32,MONITOR_FEED.width+64,MONITOR_FEED.height+64);plateContext.filter='none';
+plateContext.fillStyle='#04191eb3';plateContext.fillRect(0,0,MONITOR_FEED.width,MONITOR_FEED.height);
+const plateLight=plateContext.createLinearGradient(0,0,MONITOR_FEED.width,MONITOR_FEED.height);plateLight.addColorStop(0,'#0753542b');plateLight.addColorStop(.6,'#12353700');plateLight.addColorStop(1,'#8463401c');plateContext.fillStyle=plateLight;plateContext.fillRect(0,0,MONITOR_FEED.width,MONITOR_FEED.height);
+const machineBackdrop=document.createElement('canvas');machineBackdrop.width=LIVE_WIDTH;machineBackdrop.height=LIVE_HEIGHT;
+const backdropContext=machineBackdrop.getContext('2d'),fixedCamera=getLiveCamera();
+backdropContext.fillStyle='#111715';backdropContext.fillRect(0,0,LIVE_WIDTH,LIVE_HEIGHT);
+backdropContext.drawImage(background,fixedCamera.tx,fixedCamera.ty,W*fixedCamera.scale,H*fixedCamera.scale);
+// Continue the quiet edge strips in the same vertical plane, avoiding a
+// second, differently scaled workshop image behind the fixed machine.
+backdropContext.drawImage(background,0,0,8,background.height,0,fixedCamera.ty,fixedCamera.tx,H*fixedCamera.scale);
+const backdropRight=fixedCamera.tx+W*fixedCamera.scale;
+backdropContext.drawImage(background,background.width-8,0,8,background.height,backdropRight,fixedCamera.ty,LIVE_WIDTH-backdropRight,H*fixedCamera.scale);
+// Reuse the workshop's empty upper wall with shallow focus. The feather stops
+// above the real machine handle, so the fixed hardware stays unobstructed.
+const upperRoom=document.createElement('canvas');upperRoom.width=LIVE_WIDTH;upperRoom.height=600;
+const roomContext=upperRoom.getContext('2d');roomContext.filter='blur(4px)';roomContext.drawImage(background,0,0,W,300,-6,-6,LIVE_WIDTH+12,612);roomContext.filter='none';
+roomContext.fillStyle='#06131138';roomContext.fillRect(0,0,LIVE_WIDTH,600);
+roomContext.globalCompositeOperation='destination-in';const roomFade=roomContext.createLinearGradient(0,550,0,590);roomFade.addColorStop(0,'#fff');roomFade.addColorStop(1,'#fff0');roomContext.fillStyle=roomFade;roomContext.fillRect(0,0,LIVE_WIDTH,600);backdropContext.drawImage(upperRoom,0,0);
 const mix=(a,b,t)=>a+(b-a)*t;
 const vectorPose=(x,y,rx,ry,angle=0)=>({x,y,a:Math.cos(angle)*rx,b:Math.sin(angle)*rx,c:-Math.sin(angle)*ry,d:Math.cos(angle)*ry});
 const fixturePose=vectorPose(PRINT_SURFACE.x,PRINT_SURFACE.y,PRINT_SURFACE.rx,PRINT_SURFACE.ry,PRINT_SURFACE.angle);
@@ -51,17 +71,19 @@ export function collectorPose(index) {
 }
 
 export class LaserScene {
- constructor(container) {
+ constructor(container,{demoStock=true}={}) {
   this.container=container;this.canvas=document.createElement('canvas');
   this.canvas.width=LIVE_WIDTH;this.canvas.height=LIVE_HEIGHT;
   this.canvas.setAttribute('aria-label','1080乘1920自动上下料雕刻工作站：取料、加工、输送与收料');this.canvas.setAttribute('role','img');
   container.append(this.canvas);this.ctx=this.canvas.getContext('2d',{alpha:false});this.ctx.imageSmoothingQuality='high';
+  this.monitorCanvas=document.createElement('canvas');this.monitorCanvas.width=MONITOR_FEED.width;this.monitorCanvas.height=MONITOR_FEED.height;this.monitorCtx=this.monitorCanvas.getContext('2d',{alpha:false});this.monitorCtx.imageSmoothingQuality='high';
   this.defaults=[0,1,2].map(seed=>makeAvatar('示例作品',seed));
-  this.inventory=new CellInventory(this.defaults,24,{initialAssessments:this.defaults.map(assessPortrait)});this.elapsed=0;this.beltOffset=0;this.paused=false;this.frozenTime=0;
+  this.inventory=new CellInventory(demoStock?this.defaults:[],24,{initialAssessments:demoStock?this.defaults.map(assessPortrait):[]});this.elapsed=0;this.beltOffset=0;this.paused=false;this.frozenTime=0;this.closeupEnabled=true;
   this.trayExchange=null;this.pendingCollectorClear=false;this.exchangedCount=0;this.exchangeCount=0;
   this.update(0,0);
  }
  canStart(){return !this.trayExchange&&!this.pendingCollectorClear&&this.inventory.canStart();}
+ setCloseup(enabled){this.closeupEnabled=Boolean(enabled);}
  prepare(portrait,{nickname=''}={}){
   if(!this.canStart())return false;
   const assessment=assessPortrait(portrait);
@@ -244,10 +266,9 @@ export class LaserScene {
   c.save();c.translate(x,y);c.scale(scale,scale);c.beginPath();c.rect(0,0,spindle.width,720);c.clip();c.drawImage(spindle,0,0);c.restore();
   const headY=LASER_ORIGIN.nozzleY+pose.y-pose.lift;
   const railTop=602,railBottom=Math.max(674,headY-70),railX=LASER_ORIGIN.x+pose.x-53;
-  c.save();const back=c.createLinearGradient(railX-8,0,railX+29,0);back.addColorStop(0,'#333934');back.addColorStop(.2,'#8b8d80');back.addColorStop(.6,'#52594e');back.addColorStop(1,'#252d26');c.fillStyle=back;c.fillRect(railX-8,railTop,37,railBottom-railTop);
-  for(const dx of [-53,-31]){
-   const gx=LASER_ORIGIN.x+pose.x+dx,g=c.createLinearGradient(gx-2.5,0,gx+2.5,0);g.addColorStop(0,'#414940');g.addColorStop(.45,'#deded0');g.addColorStop(.7,'#949b88');g.addColorStop(1,'#3d453a');c.fillStyle=g;c.fillRect(gx-2.5,railTop,5,railBottom-railTop);
-  }c.restore();
+  // Extend the photographed silver guide and black rail bed. This screw-free
+  // strip keeps real surface texture as the lower spindle travels in Z.
+  c.drawImage(spindle,240,530,96,90,railX-2,railTop,22,railBottom-railTop+2);
   c.save();c.translate(x,y+pose.y-pose.lift);c.scale(scale,scale);c.beginPath();c.rect(0,720,spindle.width,spindle.height-720);c.clip();c.drawImage(spindle,0,0);c.restore();
   c.save();c.strokeStyle='#111a13';c.lineWidth=6;c.lineCap='round';c.beginPath();c.moveTo(LASER_ORIGIN.x+pose.x-19,588);c.bezierCurveTo(LASER_ORIGIN.x+pose.x+16,610,LASER_ORIGIN.x+pose.x+22,headY-90,LASER_ORIGIN.x+pose.x+6,headY-67);c.stroke();c.strokeStyle='#5e6a5b';c.lineWidth=1;c.stroke();c.restore();
  }
@@ -258,24 +279,66 @@ export class LaserScene {
   c.shadowBlur=0;for(let i=0;i<3;i++){const t=(now*2+i*.31)%1,a=i*2.3;c.globalAlpha=(1-t)*.28;c.fillStyle=i%2?'#b4fff0':'#ffda92';c.fillRect(x+Math.cos(a)*t*5,y+Math.sin(a)*t*3,.7,.7);}c.restore();
  }
 
- drawShowcase(showcase) {
-  if(!showcase.visible||!this.inventory.active)return;
-  const c=this.ctx,view=INSPECTION_CAMERA;
-  c.save();c.globalAlpha=showcase.alpha;
-  c.setTransform(view.scale,0,0,view.scale,view.tx,view.ty);c.drawImage(inspectionPhoto,0,0,941,1672);
-  c.setTransform(1,0,0,1,0,0);
-  this.drawCoin(this.inventory.active.portrait,INSPECTION_TOKEN,{shadow:false,thickness:INSPECTION_THICKNESS});
-  drawScoreOverlay(c,this.assessment,showcase.scoreProgress,{width:LIVE_WIDTH,height:LIVE_HEIGHT,nickname:this.nickname});
-  c.restore();
+ monitorState(state=this.getState()) {
+  const monitor=getMonitorState(this.elapsed,this.inventory.active,{trayBusy:Boolean(this.trayExchange),paused:this.paused});
+  if(monitor.workpieceVisible){
+   const visible=monitorPoseVisible(projectMonitorPose(this.activePose(state)));
+   monitor.workpieceVisible=visible;monitor.portraitVisible&&=visible;
+  }
+  const camera=getLiveCamera(),head=getToolPose(this.inventory.active?this.elapsed:TOOL_TIMING.total);
+  const connector={
+   from:{x:MONITOR_SCREEN.x+MONITOR_SCREEN.width*.87,y:MONITOR_SCREEN.y+MONITOR_SCREEN.height},
+   to:{x:(LASER_ORIGIN.x+head.x+34)*camera.scale+camera.tx,y:(LASER_ORIGIN.nozzleY+head.y-head.lift-42)*camera.scale+camera.ty},
+   visible:Boolean(this.inventory.active&&state.partLocation==='fixture'),
+  };
+  return {...monitor,visible:this.closeupEnabled,style:'floating',screen:{...MONITOR_SCREEN},feed:{...MONITOR_FEED},connector};
  }
 
- drawMachiningDetail(camera) {
-  if(camera.detail<=.8)return;
-  const c=this.ctx;c.save();c.globalAlpha=ease((camera.detail-.8)/.2);
-  c.drawImage(machiningPhoto,-machiningCamera.tx/machiningCamera.scale,
-   (machiningTop-machiningCamera.ty)/machiningCamera.scale,
-   LIVE_WIDTH/machiningCamera.scale,machiningPhoto.height*machiningScale/machiningCamera.scale);
-  c.restore();
+ drawMonitorHead(c,pose,now) {
+  const {tip,impact}=projectMonitorTool(pose),scale=1.2;
+  this.monitorLaser={on:Boolean(pose.laser&&!this.paused),tip,impact};
+  // Only cylindrical focusing optics enter this camera. Extend their barrel
+  // above the aperture so no cropped carriage or mounting hardware is visible.
+  c.save();
+  const left=tip.x-101*scale,right=tip.x+101*scale,bottom=tip.y-148*scale;
+  if(bottom>-16){
+   const metal=c.createLinearGradient(left,0,right,0);
+   metal.addColorStop(0,'#202b2c');metal.addColorStop(.15,'#736455');metal.addColorStop(.38,'#c2ab8f');metal.addColorStop(.51,'#ead6bb');metal.addColorStop(.73,'#75675a');metal.addColorStop(1,'#253032');
+   c.fillStyle=metal;c.fillRect(left,-16,right-left,bottom+18);
+   c.strokeStyle='#e1c09a80';c.lineWidth=1;c.beginPath();c.moveTo(left+1,-16);c.lineTo(left+1,bottom);c.moveTo(right-1,-16);c.lineTo(right-1,bottom);c.stroke();
+  }
+  c.translate(tip.x-536*scale,tip.y-1460*scale);c.scale(scale,scale);
+  c.beginPath();c.rect(420,1310,240,180);c.clip();c.drawImage(spindle,0,0);c.restore();
+  drawLaserContact(c,{tip,impact,time:now,active:pose.laser,paused:this.paused});
+ }
+ drawFloatingMonitor(state,pose,now) {
+  const c=this.ctx,m=this.monitorCtx,active=this.inventory.active,monitor=this.monitorState(state);
+  m.setTransform(1,0,0,1,0,0);m.drawImage(monitorPlate,0,0);
+  m.save();m.beginPath();m.rect(0,0,MONITOR_FEED.width,MONITOR_FEED.height);m.clip();
+  if(monitor.workpieceVisible){
+   const part=projectMonitorPose(this.activePose(state));
+   drawMetalCoin(m,active.portrait,part,{blank:this.elapsed<TOOL_TIMING.scanStart,raster:state.partLocation==='fixture'?pose.raster:null,thickness:MONITOR_THICKNESS,cache:state.partLocation!=='gripper'});
+  }
+  this.drawMonitorHead(m,pose,now);m.restore();
+  const telemetryGlass=m.createLinearGradient(690,0,1024,0);telemetryGlass.addColorStop(0,'#06202700');telemetryGlass.addColorStop(.4,'#08262b24');telemetryGlass.addColorStop(.75,'#06242b99');telemetryGlass.addColorStop(1,'#052129e0');m.fillStyle=telemetryGlass;m.fillRect(690,0,334,MONITOR_FEED.height);
+  drawMonitorOverlay(m,{...MONITOR_FEED,...monitor,assessment:monitor.score===null?null:active?.assessment});
+  const s=MONITOR_SCREEN;c.save();c.setTransform(1,0,0,1,0,0);
+  if(monitor.connector.visible){
+   const {from,to}=monitor.connector;c.save();c.lineWidth=1.3;c.strokeStyle='#74f2efa6';c.shadowColor='#48f5ef';c.shadowBlur=5;
+   c.beginPath();c.moveTo(from.x,from.y);c.lineTo(to.x,to.y);c.stroke();c.shadowBlur=0;
+   c.fillStyle='#d4fffa';c.beginPath();c.arc(to.x,to.y,3,0,Math.PI*2);c.fill();c.strokeStyle='#64eaeacc';c.lineWidth=1;c.beginPath();c.arc(to.x,to.y,6,0,Math.PI*2);c.stroke();c.restore();
+  }
+  c.shadowColor='#000b';c.shadowBlur=28;c.shadowOffsetY=10;c.fillStyle='#071717';c.beginPath();c.roundRect(s.x,s.y,s.width,s.height,MONITOR_RADIUS);c.fill();
+  c.shadowBlur=0;c.shadowOffsetY=0;
+  c.save();c.beginPath();c.roundRect(s.x,s.y,s.width,s.height,MONITOR_RADIUS);c.clip();c.drawImage(this.monitorCanvas,s.x,s.y,s.width,s.height);c.restore();
+  const edge=c.createLinearGradient(s.x,s.y,s.x+s.width,s.y+s.height);edge.addColorStop(0,'#62fbff');edge.addColorStop(.4,'#7cebeccc');edge.addColorStop(.72,'#33979faa');edge.addColorStop(1,'#63f7ff');
+  c.strokeStyle=edge;c.lineWidth=2;c.shadowColor='#39e9f2';c.shadowBlur=13;c.beginPath();c.roundRect(s.x,s.y,s.width,s.height,MONITOR_RADIUS);c.stroke();c.shadowBlur=0;
+  c.strokeStyle='#89f4ed33';c.lineWidth=.8;c.beginPath();c.roundRect(s.x+4,s.y+4,s.width-8,s.height-8,MONITOR_RADIUS-4);c.stroke();
+  // Four short registration corners remain thin enough to feel like optics.
+  c.strokeStyle='#b4ffffd9';c.lineWidth=1.4;
+  for(const [x,y,dx,dy] of [[s.x+18,s.y+18,1,1],[s.x+s.width-18,s.y+18,-1,1],[s.x+18,s.y+s.height-18,1,-1],[s.x+s.width-18,s.y+s.height-18,-1,-1]]){
+   c.beginPath();c.moveTo(x,y+dy*19);c.lineTo(x,y);c.lineTo(x+dx*19,y);c.stroke();
+  }c.restore();
  }
 
  diagnostics(state=this.getState()) {
@@ -284,14 +347,14 @@ export class LaserScene {
   snapshot.belt.forEach((p,i)=>{if(p)owners.push({id:p.id,location:i===3&&snapshot.active?this.outgoingPose(state).location:'belt'});});
   if(snapshot.active)owners.push({id:snapshot.active.id,location:state.partLocation});
   const showcase=getShowcaseState(this.elapsed,Boolean(this.inventory.active));
-  return {phase:state.phase,elapsed:this.elapsed,held:state.carried,vacuum:state.vacuum,collector:this.collectorCount,capacity:this.collectorCapacity,owners,stockUnique:new Set(owners.map(p=>p.id)).size===owners.length,camera:getLiveCamera(this.elapsed,Boolean(this.inventory.active)),showcase,rating:showcase.visible?this.assessment:null,beltScores:this.beltScores(state),tray:this.trayState()};
+  return {phase:state.phase,elapsed:this.elapsed,held:state.carried,vacuum:state.vacuum,collector:this.collectorCount,capacity:this.collectorCapacity,owners,stockUnique:new Set(owners.map(p=>p.id)).size===owners.length,camera:getLiveCamera(this.elapsed,Boolean(this.inventory.active)),showcase,rating:showcase.visible?this.assessment:null,monitor:this.monitorState(state),monitorLaser:this.monitorLaser,toolReveal:this.inventory.active?getToolPose(this.elapsed).reveal:0,beltScores:this.beltScores(state),tray:this.trayState()};
  }
  update(delta,now) {
   if(this.paused)now=this.frozenTime;else this.frozenTime=now;
   this.advanceTrayExchange(delta);
   const c=this.ctx,camera=getLiveCamera(this.elapsed,Boolean(this.inventory.active));
-  c.setTransform(camera.scale,0,0,camera.scale,camera.tx,camera.ty);c.drawImage(background,0,0,W,H);
-  this.drawMachiningDetail(camera);
+  c.setTransform(1,0,0,1,0,0);c.drawImage(machineBackdrop,0,0);
+  c.setTransform(camera.scale,0,0,camera.scale,camera.tx,camera.ty);
   const state=this.getState(),pose=getToolPose(this.inventory.active?this.elapsed:TOOL_TIMING.total);
   // The photographed vacuum nest supports and holds the disk from underneath;
   // no extra jaws are painted over the fixture or the portrait face.
@@ -300,6 +363,7 @@ export class LaserScene {
   if(pose.laser&&!this.paused)this.drawLaser(pose,now);
   this.drawCollectorFront();
   this.drawBeltScores(state,camera);
-  this.drawShowcase(getShowcaseState(this.elapsed,Boolean(this.inventory.active)));
+  if(this.closeupEnabled)this.drawFloatingMonitor(state,pose,now);
+  else this.monitorLaser={on:false,...projectMonitorTool(pose)};
  }
 }
