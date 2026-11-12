@@ -1,5 +1,5 @@
 import { LaserScene } from "./photo-scene.js";
-import { TOOL_TIMING, getToolPose } from "./scan-path.js";
+import { PRODUCTION_TIMING as TOOL_TIMING, getProductionClockPose as getToolPose } from "./production-cycle.js";
 import { DEMO_NAMES, hashText, makeAvatar, portraitDataUrl } from "./art.js";
 import { DEFAULT_SPEED, normalizeSpeed, cycleDuration, advanceProductionTime } from "./production-speed.js";
 
@@ -136,7 +136,7 @@ function finishJob() {
   old.score += current.points;
   old.finished++;
   ranks.set(current.nickname, old);
-  log(`✦ ${current.nickname} 的作品完成 · 作品效果分 ${current.assessment.score}（${current.workSeconds.toFixed(1)} 秒）`);
+  log(`✦ ${current.nickname} 的作品完成 · 随机作品分 ${current.assessment.score}（${current.workSeconds.toFixed(1)} 秒）`);
   $("tickerText").textContent =
     `✧ 恭喜「${current.nickname}」领取第 ${done} 枚星光勋章`;
   current = null;
@@ -150,10 +150,8 @@ function updateCounters() {
   $("panelDone").textContent = done.toString();
   $("panelTotal").textContent = received.toString();
   $("finishedCount").textContent = String(done).padStart(4, "0");
-  const tray=scene?.trayState();
-  $("collectorCount").textContent = `${scene?.collectorCount ?? 0} / ${scene?.collectorCapacity ?? 24}${tray?.busy?' · 换盘中':tray?.queued?' · 本轮后换盘':''}`;
-  $("clearCollector").disabled=Boolean(tray?.busy||tray?.queued||(!scene?.collectorCount&&!current));
-  $("clearCollector").textContent=tray?.busy?'收料盘更换中…':tray?.queued?'等待本轮落料后换盘':'更换收料盘';
+  $("collectorCount").textContent = `已送出 ${scene?.exchangedCount ?? 0} 件`;
+  $("clearCollector").hidden=true;
 }
 function paintRecent() {
   const container = $("recentList");
@@ -228,14 +226,14 @@ function updateProgress() {
     'release-fixture':'释放毛坯','retract-from-fixture':'吸盘退回',
     'park-for-print':'取料臂避让','clamp':'定位座真空吸附',
     'head-load':'雕刻头定位','scan':'逐行雕刻',
-    'head-retract':'关光抬头','head-return':'雕刻头归位','show-finished':'监视屏作品评分',
+    'head-retract':'关光抬头','head-return':'雕刻头归位','show-finished':'随机积分揭晓',
     'unclamp':'定位座解除吸附','approach-fixture':'取料臂接近成品',
     'lower-for-pickup':'吸盘下降','grip-finished':'吸附成品',
     'lift-finished':'提起成品','transfer-to-belt':'移向传送带',
     'lower-to-belt':'成品落到皮带','release-belt':'释放成品',
     'retract-from-belt':'吸盘抬起','park-after-unload':'取料臂归位',
-    'belt-index':'皮带向右步进','chute-delivery':'沿滑槽进入收料盘',
-    'settle':'成品收集完成',
+    'belt-index':'皮带向画面底部步进','chute-delivery':'成品沿皮带送出屏幕',
+    'settle':'成品送出完成',
   };
   $("jobState").textContent = labels[phase] || phase;
 }
@@ -322,7 +320,7 @@ function restartAutoTimer() {
   autoTimer = null;
   if (!$("autoSwitch").checked) return;
   autoTimer = setInterval(() => {
-    if (!paused && scene && queue.length < 2 && scene.collectorCount < scene.collectorCapacity) {
+    if (!paused && scene && queue.length < 2) {
       enqueue(makeEvent("comment", randomName()));
     }
   }, (cycleDuration(TOTAL_SECONDS, speed) + .5) * 1000);

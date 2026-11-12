@@ -13,6 +13,6 @@ if (!params.has('demo')) {
   } catch { /* Offline previews still work without the studio service. */ }
 }
 if (server) {
-  const { startStudioClient } = await import('./studio-client.js?v=relay1');
+  const { startStudioClient } = await import('./studio-client.js?v=finished4');
   await startStudioClient(server);
-} else await import('./main.js?v=relay1');
+} else await import('./main.js?v=finished4');

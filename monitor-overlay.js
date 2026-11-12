@@ -1,10 +1,12 @@
 // Cyan floating-camera HUD. The caller owns its outer frame and renders the
 // tilted material first; this module paints only the feed annotations.
 import { getRasterSample, RASTER_ROWS } from './scan-path.js';
+import { CHALLENGE_MAX_SCORE, formatChallengeScore } from './challenge-score.js';
 
 const clamp = value => Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
 const FONT = '"Microsoft YaHei", "Segoe UI", sans-serif';
 const PHASES = new Set(['loading', 'engraving', 'finishing', 'rating', 'unloading', 'idle', 'tray-exchange']);
+const signalClocks = new WeakMap();
 
 function clean(value) {
   return String(value ?? '').replace(/[\r\n\t]/g, ' ').trim();
@@ -31,24 +33,25 @@ export function getMonitorOverlayData({
   const completedRows = raster.complete ? RASTER_ROWS
     : raster.row + raster.lanes.filter(lane => lane.complete).length;
   const score = !inactive && (rating || state === 'unloading') && Number.isFinite(assessment?.score)
-    ? Math.round(clamp(assessment.score / 100) * 100) : null;
+    ? Math.round(clamp(assessment.score / CHALLENGE_MAX_SCORE) * CHALLENGE_MAX_SCORE) : null;
   const reveal = score === null ? 0 : rating ? clamp(scoreProgress) : 1;
   const displayScore = score === null ? null : Math.round(score * (1 - (1 - reveal) ** 3));
   const statuses = {
-    loading: '等待上料', engraving: '逐行雕刻', finishing: '雕刻头归位', rating: '作品评分',
+    loading: '等待上料', engraving: '逐行雕刻', finishing: '雕刻头归位', rating: '积分揭晓',
     unloading: '成品出料', idle: '待机', 'tray-exchange': '收料盘更换中',
   };
   const name = inactive ? '' : clean(nickname);
   const percent = Math.floor(printProgress * 100);
-  const pillValue = score !== null ? `${displayScore}分` : rating ? '评分待更新'
+  const pillValue = score !== null ? `${formatChallengeScore(displayScore)}分` : rating ? '评分待更新'
     : state === 'unloading' ? '成品已出料' : `${percent}%`;
   const comment = rating && score !== null
-    ? clean(assessment.comment).split(/[，。；]/u)[0] || '图像效果已评估' : '';
+    ? '随机积分已揭晓' : '';
   return {
     phase: state, nickname: name, paused: Boolean(paused),
     phaseStatus: statuses[state], status: `${statuses[state]}${paused ? ' · 已暂停' : ''}`,
     progress: printProgress, percent, completedRows, totalRows: RASTER_ROWS,
-    score, displayScore, scoreProgress: reveal, comment,
+    score, displayScore, scoreText: displayScore === null ? null : formatChallengeScore(displayScore),
+    scoreProgress: reveal, comment,
     pillValue: inactive ? '' : pillValue,
     pillText: inactive ? state === 'idle' ? '等待下一件作品' : '收料盘更换中'
       : `${name || '当前作品'} | ${pillValue}`,
@@ -61,7 +64,7 @@ export function getMonitorOverlayData({
  * and a compact warm-gold capsule at bottom-right, y450..500.
  */
 export function drawMonitorOverlay(ctx, {
-  width = 1024, height = 512, ...options
+  width = 1024, height = 512, time = 0, ...options
 } = {}) {
   if (!ctx || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
   const data = getMonitorOverlayData(options);
@@ -83,6 +86,24 @@ export function drawMonitorOverlay(ctx, {
   ctx.fillStyle = '#9bcfcf'; ctx.font = `500 25px ${FONT}`;
   ctx.fillText('LIVE CAM', 225, 44);
   ctx.fillStyle = '#63d7d2a6'; ctx.fillRect(64, 62, 68, 2);
+  ctx.save(); ctx.shadowColor = '#ff342e'; ctx.shadowBlur = 11;
+  ctx.fillStyle = '#ff4338'; ctx.beginPath(); ctx.arc(367, 35, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0; ctx.fillStyle = '#fff2e2'; ctx.beginPath(); ctx.arc(367, 35, 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+
+  // Decorative feed activity follows the supplied animation clock, freezing on
+  // pause. It does not claim to measure laser power, precision, or audio level.
+  const suppliedTime = Number.isFinite(time) ? Math.max(0, time) : 0;
+  const signalTime = data.paused ? signalClocks.get(ctx) ?? suppliedTime : suppliedTime;
+  if (!data.paused) signalClocks.set(ctx, signalTime);
+  const running = data.phase === 'engraving';
+  ctx.fillStyle = running ? '#43e1e7c9' : '#3a818875';
+  for (let index = 0; index < 13; index++) {
+    const envelope = 1 - index / 15;
+    const height = running ? 8 + Math.round((.45 + .55 * Math.sin(index * 1.7 + signalTime * 7) ** 2) * envelope * 49)
+      : 6 + Math.round(envelope * 12);
+    for (let offset = 0; offset < height; offset += 6) ctx.fillRect(64 + index * 11, 438 - offset, 7, 4);
+  }
 
   // Keep the actual scan measurements in the same light, compact arrangement
   // as the reference feed, leaving the material as the visual subject.

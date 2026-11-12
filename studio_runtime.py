@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import secrets
 import time
 import uuid
 from collections import OrderedDict
@@ -21,6 +22,27 @@ DEFAULT_CONFIG = {
 }
 AVATAR_DOMAINS = ("douyinpic.com", "byteimg.com", "ibyteimg.com", "pstatp.com",
                   "toutiaoimg.com", "douyinstatic.com", "bytedance.com")
+CHALLENGE_MAX_SCORE = 100000
+LIVE_EVENT_TYPES = {'comment', 'member', 'gift', 'like', 'follow', 'share', 'social'}
+
+
+def create_challenge_assessment():
+    """One entertainment score per workpiece; unrelated to its image or person."""
+    return dict(score=secrets.randbelow(CHALLENGE_MAX_SCORE + 1), label="随机作品分",
+                mode="random", min=0, max=CHALLENGE_MAX_SCORE)
+
+
+def ensure_challenge_assessment(job):
+    """Preserve a valid server score and initialize legacy jobs only once."""
+    assessment = job.get("assessment")
+    if (not isinstance(assessment, dict) or assessment.get("mode") != "random"
+            or type(assessment.get("score")) is not int
+            or not 0 <= assessment["score"] <= CHALLENGE_MAX_SCORE):
+        job["assessment"] = create_challenge_assessment()
+    else:
+        job["assessment"] = dict(score=assessment["score"], label="随机作品分",
+                                 mode="random", min=0, max=CHALLENGE_MAX_SCORE)
+    return job["assessment"]
 
 
 def safe_avatar_url(value):
@@ -173,6 +195,8 @@ class StudioRuntime:
         self.counters = dict(events=0, accepted=0, completed=0, skipped=0, queue_dropped=0)
         self.logs = []
         self.recent = []
+        self.live_events = []
+        self.ranking = []
         self.commands = []
         self.runtime = dict(elapsed=0, phase="idle", collector_count=0, tray_exchanging=False,
                             avatar_status="loading", portrait_message="")
@@ -196,9 +220,13 @@ class StudioRuntime:
         return result
 
     def snapshot(self):
+        for job in [self.active, *self.queue]:
+            if job:
+                ensure_challenge_assessment(job)
         return copy.deepcopy(dict(config=self.public_config(), relay=self.relay, queue=self.queue,
             active=self.active, paused=self.paused, counters=self.counters, logs=self.logs,
-            recent=self.recent, display={"connected": len(self.displays), "owner_id": self.owner_id},
+            recent=self.recent, ranking=self.ranking, live_events=self.live_events,
+            display={"connected": len(self.displays), "owner_id": self.owner_id},
             runtime=self.runtime, commands=self.commands))
 
     def log(self, level, message):
@@ -237,8 +265,14 @@ class StudioRuntime:
         key = hashlib.sha256(url.encode()).hexdigest()[:32]
         self.avatars[key] = url
         self.avatars.move_to_end(key)
+        protected = {record.get('avatar_url', '').removeprefix('/api/avatar/')
+                     for record in [self.active, *self.queue, *self.recent, *self.ranking, *self.live_events]
+                     if record and record.get('avatar_url')}
         while len(self.avatars) > 1024:
-            self.avatars.popitem(last=False)
+            victim = next((item for item in self.avatars if item not in protected), None)
+            if victim is None:
+                break
+            del self.avatars[victim]
         return "/api/avatar/" + key
 
     @staticmethod
@@ -251,6 +285,7 @@ class StudioRuntime:
     def _activate(self):
         if not self.active and self.queue and not self.paused and not self.runtime["tray_exchanging"] and self.owner_id:
             self.active = self.queue.pop(0)
+            ensure_challenge_assessment(self.active)
             self.runtime.update(elapsed=0, phase="loading", avatar_status="loading", portrait_message="")
             self.log("info", f"开始打印：{self.active['nickname']}")
 
@@ -278,6 +313,7 @@ class StudioRuntime:
             if kind != "gift":
                 self.counters["skipped"] += 1
                 return False
+            ensure_challenge_assessment(existing)
             existing.update(is_gift=True, kind="gift", closeup=self.closeup(True),
                             gift_name=gift_name, gift_count=existing["gift_count"] + gift_count)
             if not existing.get("avatar_url"):
@@ -299,7 +335,8 @@ class StudioRuntime:
         job = dict(id=uuid.uuid4().hex, user_id=user_id, nickname=nickname,
                    avatar_url=self.register_avatar(user.get("avatar_url")), kind=kind,
                    is_gift=kind == "gift", closeup=self.closeup(kind == "gift"), gift_name=gift_name,
-                   gift_count=gift_count, created_at=self.clock(), source=source, room_id=room_id)
+                   gift_count=gift_count, created_at=self.clock(), source=source, room_id=room_id,
+                   assessment=create_challenge_assessment())
         if kind == "gift" and self.config["gift_priority"]:
             insertion = next((i for i, pending in enumerate(self.queue) if not pending["is_gift"]), len(self.queue))
             self.queue.insert(insertion, job)
@@ -311,7 +348,7 @@ class StudioRuntime:
         return True
 
     def receive_event(self, event):
-        if not isinstance(event, dict) or event.get("type") not in {"member", "gift"}:
+        if not isinstance(event, dict) or event.get("type") not in LIVE_EVENT_TYPES:
             return False
         user, data = event.get("user"), event.get("data")
         if not isinstance(user, dict) or not isinstance(data, dict):
@@ -329,6 +366,23 @@ class StudioRuntime:
                 self.counters["skipped"] += 1
                 return False
             self._remember(self.seen, key)
+        # Show received business events even when they do not request a print.
+        # Keep a bounded, sanitized feed; never forward the raw upstream object.
+        def safe_count(value):
+            try:
+                return max(0, min(100000000, int(value or 0)))
+            except (ValueError, TypeError, OverflowError):
+                return 0
+        self.live_events.insert(0, dict(type=kind, room_id=room, msg_id=msg_id,
+            received_at=self.clock(), nickname=_text(user.get('nickname'), 40) or '直播观众',
+            user_id=_text(user.get('id') or user.get('sec_uid'), 200),
+            avatar_url=self.register_avatar(user.get('avatar_url')),
+            content=_text(data.get('content'), 500) if kind == 'comment' else '',
+            gift_name=_text(data.get('gift_name'), 50) if kind == 'gift' else '',
+            count=safe_count(data.get('repeat_count') if kind == 'gift' else data.get('count'))))
+        del self.live_events[100:]
+        if kind not in {'member', 'gift'}:
+            return True
         user_id = _text(user.get("id") or user.get("sec_uid"), 200)
         if not user_id:
             self.counters["skipped"] += 1
@@ -424,26 +478,10 @@ class StudioRuntime:
         if "tray_exchanging" in message:
             self.runtime["tray_exchanging"] = bool(message["tray_exchanging"])
         if kind == "complete":
-            assessment = message.get("assessment")
-            if not isinstance(assessment, dict):
-                assessment = {}
-            try:
-                score = max(0, min(100, float(assessment.get("score", 0))))
-                if not math.isfinite(score):
-                    score = 0
-            except (ValueError, TypeError):
-                score = 0
-            clean = {"score": score}
-            for key in ("clarity", "composition", "color"):
-                try:
-                    value = float(assessment.get(key, 0))
-                    if math.isfinite(value):
-                        clean[key] = max(0, min(100, value))
-                except (ValueError, TypeError):
-                    pass
-            for key in ("label", "comment", "grade", "detail"):
-                if isinstance(assessment.get(key), str):
-                    clean[key] = _text(assessment[key], 160)
+            # Rendering clients report physical completion, never choose a score.
+            # Gift upgrades and renderer handoff keep the assessment assigned at enqueue.
+            clean = copy.deepcopy(ensure_challenge_assessment(self.active))
+            score = clean["score"]
             finished = {**self.active, "assessment": clean, "completed_at": self.clock(),
                         "avatar_status": self.runtime["avatar_status"],
                         "portrait_message": self.runtime["portrait_message"]}
@@ -454,6 +492,12 @@ class StudioRuntime:
                 finished["work_seconds"] = 0
             self.recent.insert(0, finished)
             del self.recent[30:]
+            # The session leaderboard survives the rolling recent-history limit.
+            # Python's stable sort keeps the first completion ahead on equal scores.
+            self.ranking = [job for job in self.ranking if job["id"] != finished["id"]]
+            self.ranking.append(copy.deepcopy(finished))
+            self.ranking.sort(key=lambda job: job["assessment"]["score"], reverse=True)
+            del self.ranking[10:]
             self.counters["completed"] += 1
             self.log("info", f"打印完成：{self.active['nickname']}，评分 {score:g}")
             self.active = None

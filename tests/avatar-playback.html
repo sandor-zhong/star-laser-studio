@@ -1,0 +1,5 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>三个头像实测录屏回放</title>
+<style>body{margin:0;background:#071418;color:#e6fcff;font:14px sans-serif}video{height:100vh;display:block;margin:auto}nav{position:fixed;top:12px;left:12px;background:#102e3ce8;padding:12px;max-width:300px}button{padding:8px;margin:4px}output{display:block;white-space:pre-wrap}</style>
+<video id="video" controls preload="auto"></video><nav><button id="first">查看雕刻</button><button id="last">查看三个成品</button><output id="metadata">加载录屏中</output></nav>
+<script>const v=document.getElementById('video'),o=document.getElementById('metadata');function report(){o.textContent=JSON.stringify({width:v.videoWidth,height:v.videoHeight,duration:v.duration,currentTime:v.currentTime,ready:v.readyState,error:v.error?.message??null},null,2);}v.onloadedmetadata=report;v.onseeked=report;v.onerror=report;document.getElementById('first').onclick=()=>{v.pause();v.currentTime=1.5;};document.getElementById('last').onclick=()=>{v.pause();v.currentTime=Math.max(0,v.duration-.5);};fetch('/PREVIEW-three-avatars-finished-only.webm').then(r=>r.blob()).then(b=>v.src=URL.createObjectURL(b));</script></html>
+

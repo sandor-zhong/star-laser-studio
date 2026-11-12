@@ -1,6 +1,6 @@
 import { LaserScene } from './photo-scene.js';
 import { makeAvatar, hashText } from './art.js';
-import { TOOL_TIMING, getToolPose } from './scan-path.js';
+import { PRODUCTION_TIMING as TOOL_TIMING, getProductionClockPose as getToolPose } from './production-cycle.js';
 import { normalizeSpeed, advanceProductionTime } from './production-speed.js';
 
 const TOTAL = TOOL_TIMING.total;
@@ -24,7 +24,7 @@ async function loadPortrait(job) {
     const side = Math.min(image.naturalWidth, image.naturalHeight);
     ctx.save();ctx.beginPath();ctx.arc(384, 384, 384, 0, Math.PI * 2);ctx.clip();
     ctx.drawImage(image, (image.naturalWidth - side) / 2, (image.naturalHeight - side) / 2, side, side, 0, 0, 768, 768);ctx.restore();
-    // Verify that the same-origin image remains readable for the score model.
+    // Keep the live canvas readable for screenshots and stream capture.
     ctx.getImageData(0, 0, 1, 1);
     return { image: canvas, status: 'actual', message: '使用观众实际头像' };
   } catch {
@@ -38,7 +38,9 @@ export async function startStudioClient(initialState) {
   let current = null, loadingId = null, loadedPortrait = null, elapsed = 0, completeSent = false, committed = false;
   let lastFrame = performance.now(), lastReport = 0, retry = 0, reconnectTimer, trayBusy = false;
   let avatarStatus = 'loading', portraitMessage = '', commandsHydrated = false;
+  let disposed = false;
   const commandIds = new Set();
+  const portraitCache = new Map();
   scene.setCloseup(false);
 
   const controls = document.getElementById('openControls');
@@ -50,6 +52,35 @@ export async function startStudioClient(initialState) {
   function send(message) {
     if (connected && socket?.readyState === WebSocket.OPEN) { socket.send(JSON.stringify(message));return true; }
     return false;
+  }
+  function cachedPortrait(job) {
+    let entry = portraitCache.get(job.id);
+    if (!entry) {
+      entry = { result: null, promise: null };
+      portraitCache.set(job.id, entry);
+      entry.promise = loadPortrait(job).then(result => {
+        entry.result = result;
+        // A request can finish after its record has left the Top 10. Always
+        // derive the visible list from the latest server snapshot.
+        if (!disposed && state.ranking?.some(record => record.id === job.id)) syncSessionState();
+        return result;
+      });
+    }
+    return entry;
+  }
+  function syncSessionState() {
+    const records = Array.isArray(state.ranking) ? state.ranking.slice(0, 10) : [];
+    const ranking = records.map(record => ({ ...record, portrait: cachedPortrait(record).result?.image ?? null }));
+    scene.setSessionState({ completedCount: state.counters?.completed ?? 0, ranking });
+    // Keep completed portraits reusable without growing a live session's memory
+    // for every visitor. Pending requests remain guarded by the latest state.
+    if (portraitCache.size > 40) {
+      const retained = new Set([current?.id, ...records.map(record => record.id)]);
+      for (const id of portraitCache.keys()) {
+        if (!retained.has(id)) portraitCache.delete(id);
+        if (portraitCache.size <= 40) break;
+      }
+    }
   }
   function diagnostics() {
     const physical = scene.diagnostics();
@@ -69,8 +100,8 @@ export async function startStudioClient(initialState) {
     const version = ++generation;loadingId = job.id;loadedPortrait = null;current = { ...job };elapsed = clampTime(resumeTime);completeSent = false;committed = false;
     avatarStatus = 'loading';portraitMessage = '正在读取观众头像';
     scene.setCloseup(isCloseup(current, state.config));report(performance.now(), true);
-    const portrait = await loadPortrait(job);
-    if (version !== generation || state.active?.id !== job.id) return;
+    const portrait = await cachedPortrait(job).promise;
+    if (disposed || version !== generation || state.active?.id !== job.id) return;
     // A fresh renderer reconstructs the active piece at the server's last
     // acknowledged position; it does not create an extra queued print.
     loadedPortrait = portrait;installPortrait();
@@ -80,7 +111,7 @@ export async function startStudioClient(initialState) {
     // It waits until the same physical tray has returned and docked.
     if (!loadedPortrait || !scene.canStart()) return;
     const portrait = loadedPortrait;loadedPortrait = null;
-    if (!scene.prepare(portrait.image, { nickname: current.nickname })) return;
+    if (!scene.prepare(portrait.image, { nickname: current.nickname, assessment: current.assessment })) return;
     avatarStatus = portrait.status;portraitMessage = portrait.message;
     scene.updateEngraving(elapsed);loadingId = null;lastFrame = performance.now();report(lastFrame, true);
   }
@@ -119,15 +150,23 @@ export async function startStudioClient(initialState) {
     if (commandIds.size > 100) { const recent = [...commandIds].slice(-30);commandIds.clear();recent.forEach(id => commandIds.add(id)); }
     if (!wasRenderer && renderer && current?.id === state.active?.id) elapsed = Math.max(elapsed, clampTime(state.runtime?.elapsed));
     updateJob();
+    syncSessionState();
+    if (!wasRenderer && renderer) {
+      // A reloaded display starts with its own physical tray state. Report it
+      // even when false, so a departed renderer's busy flag cannot stall jobs.
+      const actualTray = scene.trayState();trayBusy = actualTray.busy;
+      send({ type: 'tray_status', busy: actualTray.busy, count: scene.collectorCount });
+    }
     if (renderer && completeSent && current?.id === state.active?.id) sendCompletion();
     info.textContent = `${connected ? renderer ? '后台已连接 · 主显示端' : '后台已连接 · 只读镜像' : '后台连接中'} · ${state.relay?.status === 'connected' ? '抖音转发在线' : '抖音转发未连接'} · ${state.queue.length} 位等待`;
   }
   function sendCompletion() {
     if (!renderer || !current || loadingId) return;
     const tray = scene.trayState();
-    send({ type: 'complete', job_id: current.id, assessment: scene.assessment, work_seconds: TOTAL / normalizeSpeed(state.config.speed), collector_count: scene.collectorCount, tray_exchanging: tray.busy });
+    send({ type: 'complete', job_id: current.id, work_seconds: TOTAL / normalizeSpeed(state.config.speed), collector_count: scene.collectorCount, tray_exchanging: tray.busy });
   }
   function connect() {
+    if (disposed) return;
     clearTimeout(reconnectTimer);
     const url = new URL('/ws/studio', location.href);url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';url.searchParams.set('role', 'display');
     socket = new WebSocket(url);
@@ -138,6 +177,7 @@ export async function startStudioClient(initialState) {
     };
     socket.onerror = () => { /* onclose owns reconnect and the visible state. */ };
     socket.onclose = () => {
+      if (disposed) return;
       connected = false;renderer = false;scene.paused = true;
       info.textContent = '后台连接中断，画面已暂停，正在重连…';
       reconnectTimer = setTimeout(connect, Math.min(15000, 1000 * 2 ** Math.min(retry++, 4)));
@@ -160,7 +200,7 @@ export async function startStudioClient(initialState) {
     report(now);
     if (now - (animate.lastDiagnostic || 0) > 400) {
       const value = diagnostics();scene.canvas.dataset.diagnostics = JSON.stringify(value);
-      scene.canvas.setAttribute('aria-label', current ? `${current.nickname} · ${current.is_gift ? '礼物' : '入场'}头像加工 · ${Math.floor(elapsed / TOTAL * 100)}%${scene.closeupEnabled ? ' · 特写开启' : ''}` : '1080乘1920激光雕刻工作站，等待直播观众');
+      scene.canvas.setAttribute('aria-label', current ? `${current.nickname} · ${current.is_gift ? '礼物' : '入场'}头像加工 · ${Math.floor(elapsed / TOTAL * 100)}%${scene.closeupEnabled ? ' · 聚焦光效开启' : ''}` : '1080乘1920激光雕刻工作站，等待直播观众');
       animate.lastDiagnostic = now;
     }
     requestAnimationFrame(animate);
@@ -168,6 +208,7 @@ export async function startStudioClient(initialState) {
   // Diagnostic methods are retained for local integration tools. Events and
   // mutations are exclusively owned by the authenticated local service.
   window.LaserStudio = { state: () => ({ connected, renderer, processing: current?.nickname || null, queue: state.queue.length, completed: state.counters?.completed || 0, paused: state.paused, speed: state.config.speed }), diagnostics };
-  window.addEventListener('pagehide', () => { clearTimeout(reconnectTimer);socket?.close(); });
+  window.addEventListener('pagehide', () => { disposed = true;generation++;clearTimeout(reconnectTimer);socket?.close(); });
+  syncSessionState();
   connect();requestAnimationFrame(animate);
 }

@@ -20,7 +20,8 @@ test('monitor phases and engraving progress follow the single mechanical clock',
     assert.equal(monitor.partLocation, getHandlingState(t).partLocation);
     assert.equal(monitor.partId, active.id);
     assert.equal(monitor.nickname, active.nickname);
-    assert.equal(monitor.score, t < T.displayStart ? null : active.assessment.score);
+    assert.equal(monitor.score, t < T.scanStart ? null : active.assessment.score);
+    assert.equal(monitor.scoreProgress,monitor.progress);
   }
 });
 
@@ -49,11 +50,12 @@ test('the physical token remains the monitor candidate through fixture pickup un
   }
 });
 
-test('scores are withheld until display and never leak into idle, tray exchange or the next record', () => {
-  assert.equal(getMonitorState(T.displayStart - 1e-6, active).score, null);
-  assert.equal(getMonitorState(T.displayStart, active).score, 87);
-  assert.equal(getMonitorState(T.displayStart, active).scoreProgress, 0);
-  assert.ok(Math.abs(getMonitorState(T.displayStart + 1.6, active).scoreProgress - 1) < 1e-10);
+test('scoring shares the scan clock and has no extra reveal period after the laser finishes', () => {
+  assert.equal(getMonitorState(T.scanStart - 1e-6, active).score, null);
+  assert.equal(getMonitorState(T.scanStart, active).score, 87);
+  assert.equal(getMonitorState(T.scanStart, active).scoreProgress, 0);
+  assert.ok(getMonitorState(T.scanEnd-1e-6,active).scoreProgress<1);
+  assert.equal(getMonitorState(T.scanEnd,active).scoreProgress,1);
   assert.equal(getMonitorState(T.total, active).scoreProgress, 1);
   const next = { id: 'work-0002', nickname: '下一位', assessment: { score: 32 } };
   const newJob = getMonitorState(0, next);

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><base href="/"><meta name="viewport" content="width=device-width,initial-scale=1"><title>连续传送与同步评分验证</title>
+<style>body{margin:0;background:#0b1619;color:#dff9fa;font:13px sans-serif}#scene{position:absolute;inset:0;display:grid;place-items:center}canvas{width:min(100vw,56.25vh);height:auto}nav{position:fixed;top:8px;left:8px;z-index:2;padding:8px;border-radius:9px;background:#0c2834ee}nav a,nav button{margin:4px;color:#d6f7ff}button{background:#164752;border:1px solid #84bfc9;padding:6px}</style>
+<div id="scene"></div><nav><span id="views"></span><button id="audit">检查连续生产</button><button id="record">录制两轮加工</button><span id="status"></span></nav><div id="exports" hidden></div><output id="audit-result" hidden></output>
+<script type="importmap">{"imports":{"/production-cycle.js":"/production-cycle.js?v=finished4","/photo-scene.js":"/photo-scene.js?v=finished4","/challenge-scene.js":"/challenge-scene.js?v=finished4","/production-layout.js":"/production-layout.js?v=finished4","/production-optics.js":"/production-optics.js?v=finished4","/challenge-hud.js":"/challenge-hud.js?v=finished4","/cell-inventory.js":"/cell-inventory.js?v=finished4","/monitor-state.js":"/monitor-state.js?v=finished4","/pick-arm.js":"/pick-arm.js?v=finished4"}}</script>
+<script type="module">
+import{LaserScene}from'./photo-scene.js';
+import{makeAvatar}from'./art.js';
+import{PRODUCTION_TIMING as T,PRODUCTION_PHASES as HANDLING_PHASES,toLegacyElapsed}from'./production-cycle.js';
+
+import{BELT_SLOTS,BELT_STEP,beltPose,getOutletPose,PRODUCTION_LAYOUT as L}from'./production-layout.js';
+import{advanceProductionTime}from'./production-speed.js';
+const params=new URLSearchParams(location.search),time=Number(params.get('t')??3.2),speed=1.8;
+const scene=new LaserScene(document.getElementById('scene')),status=document.getElementById('status');
+const portraits=[0,1,2,3].map(i=>makeAvatar('同步评分验证',i));
+const assessment=score=>({score,mode:'random',min:0,max:100000});
+const stats={ready:false};const updateStats=patch=>{Object.assign(stats,patch);document.documentElement.dataset.stats=JSON.stringify(stats);};
+const samples=[['雕刻开始',T.scanStart],['雕刻与评分',3.2],['完成前一刻',T.scanEnd-.001],['雕刻评分完成',T.scanEnd],['成品展示',5],['向屏外送出',7.5]];
+for(const[label,t]of samples){const a=document.createElement('a');a.textContent=label;a.href=`/tests/through-preview.html?t=${t}`;document.getElementById('views').append(a);}
+function exportChunks(name,data){const root=document.getElementById('exports');root.querySelectorAll(`[data-export="${name}"]`).forEach(el=>el.remove());for(let i=0;i<data.length;i+=50000){const el=document.createElement('textarea');el.dataset.export=name;el.value=data.slice(i,i+50000);root.append(el);}}
+function render(t,delta=0,now=t/speed){scene.updateEngraving(t);scene.update(delta,now);const d=scene.diagnostics();scene.canvas.dataset.diagnostics=JSON.stringify(d);status.textContent=`${d.phase} · ${d.scoring.displayed??'待评分'}`;return d;}
+function finish(portrait,score){scene.prepare(portrait,{nickname:'示例观众',assessment:assessment(score)});render(T.total);scene.complete();}
+function restore(){scene.paused=false;scene.reset();const scores=[95420,94680,92310,91760,90220,89880,85310,96830,92760,88420];for(let i=0;i<10;i++)finish(portraits[i%4],scores[i]);scene.prepare(portraits[1],{nickname:'陈勇',assessment:assessment(96830)});render(time);}
+restore();exportChunks('frame',scene.canvas.toDataURL('image/png'));updateStats({ready:true});
+document.getElementById('audit').onclick=async()=>{
+ const errors=[],assert=(v,m)=>{if(!v&&errors.length<80)errors.push(m);};
+ scene.reset();scene.paused=false;const initial=scene.diagnostics().owners.length,known=new Map();let checks=0;
+ const times=[...new Set([...HANDLING_PHASES.map(p=>(p.start+p.end)/2),...HANDLING_PHASES.flatMap(p=>[Math.max(0,p.start-.00001),p.start,Math.min(T.total,p.start+.00001)]),T.scanEnd-.00000001,T.scanEnd])].sort((a,b)=>a-b);
+ function validate(t,expected){const d=scene.diagnostics(),active=scene.inventory.active;checks++;
+  assert(d.owners.length+d.exited===expected,'物料数量不守恒');assert(d.stockUnique,'物料重复');assert(d.outputMode==='through','不是连续传送');assert(d.collector===0&&!d.tray.busy,'出现托盘或满盘停机');
+  assert(Math.abs(d.camera.scale-1080/L.width)<1e-10&&d.camera.tx===0&&d.camera.ty===0,'镜头不固定');
+  if(active){const score=active.assessment.score;assert(Number.isInteger(score)&&score>=0&&score<=100000,'随机分数越界');
+   if(t<T.scanStart)assert(d.scoring.displayed===null,'上料时提前评分');
+   else if(t<T.scanEnd){assert(d.scoring.displayed===Math.floor(score*d.toolReveal),'评分与显影不同步');if(score)assert(d.scoring.displayed<score,'评分提前完成');}
+   else assert(d.scoring.displayed===score&&d.scoring.complete,'雕刻结束评分未同时结束');
+  }
+  for(const record of [active,...scene.inventory.belt].filter(Boolean)){if(known.has(record.id))assert(known.get(record.id)===record.assessment.score,'同件分数变化');else known.set(record.id,record.assessment.score);}
+  for(const label of d.beltScores){const r=scene.inventory.belt.find(p=>p?.id===label.id)??active;assert(r?.assessment?.score===label.score,'标签与头像分数不一致');}
+ }
+ for(let i=0;i<30;i++){
+  assert(scene.canStart(),'连续生产被满盘阻塞');scene.prepare(portraits[i%4],{nickname:`观众${i+1}`});const id=scene.inventory.active.id,score=scene.inventory.active.assessment.score;
+  for(const t of times){render(t);validate(t,initial+i+1);}
+  render(2.4);const frozen=scene.diagnostics().scoring.displayed;scene.paused=true;scene.update(.1,100);assert(scene.diagnostics().scoring.displayed===frozen,'暂停时分数继续变化');scene.paused=false;
+  render(T.total);const out=getOutletPose({t:toLegacyElapsed(T.total)});assert(!out.visible&&out.y-out.ry>1920/(1080/L.width),'成品还可见就删除');scene.complete();render(T.total);validate(T.total,initial+i+1);
+  assert(scene.inventory.belt.some(p=>p?.id===id&&p.assessment.score===score),'本件出料改分');
+  status.textContent=`连续生产 ${i+1}/30`;await new Promise(resolve=>setTimeout(resolve,0));
+ }
+ const result={passed:errors.length===0,cycles:30,checks,exited:scene.exchangedCount,collector:scene.collectorCount,errors};document.getElementById('audit-result').textContent=JSON.stringify(result);updateStats({audit:result});restore();status.textContent=result.passed?'30轮连续生产通过':`发现${errors.length}个问题`;
+};
+document.getElementById('record').onclick=()=>{
+ restore();scene.reset();for(let i=0;i<4;i++)finish(portraits[i%4],88420+i*2000);scene.prepare(portraits[1],{nickname:'陈勇',assessment:assessment(96830)});
+ const stream=scene.canvas.captureStream(0),track=stream.getVideoTracks()[0],chunks=[];
+ const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9')?'video/webm;codecs=vp9':'video/webm';const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:4500000});
+ recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};recorder.onstop=()=>{const r=new FileReader();r.onload=()=>{exportChunks('video',r.result);stream.getTracks().forEach(t=>t.stop());updateStats({recording:false,videoReady:true});status.textContent='录制完成';};r.readAsDataURL(new Blob(chunks,{type:mime}));};
+ const workerUrl=URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),1000/30)'],{type:'text/javascript'})),worker=new Worker(workerUrl);let previous=performance.now(),elapsed=0,cycle=0;recorder.start();render(0);track.requestFrame();updateStats({recording:true});
+ worker.onmessage=()=>{const now=performance.now(),dt=(now-previous)/1000;previous=now;elapsed=Math.min(T.total,advanceProductionTime(elapsed,dt,speed));render(elapsed,dt,now/1000);track.requestFrame();if(elapsed>=T.total){scene.complete();cycle++;if(cycle===2){worker.terminate();URL.revokeObjectURL(workerUrl);recorder.stop();}else{scene.prepare(portraits[2],{nickname:'第二位观众',assessment:assessment(88420)});elapsed=0;}}};
+};
+</script></html>

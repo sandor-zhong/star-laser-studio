@@ -1,0 +1,12 @@
+{
+  "synthetic": true,
+  "comment_received": true,
+  "did_not_enqueue_print": true,
+  "studio_port": 8182,
+  "relay_port": 8102,
+  "collector_port": 8857,
+  "room_id": "278339149230",
+  "collector_current_status": "closed",
+  "collector_current_message": "直播间已结束或未开播",
+  "actual_events_observed_this_run": 0
+}

@@ -33,11 +33,12 @@ export function unprojectArmPoint(point) {
 }
 
 /** Right/up world-plane elbow branch, projected back into the photograph. */
-export function solveArm(target = {}) {
+export function solveArm(target = {}, { spindleHeight = 185 } = {}) {
   target ??= {};
   const g = ARM_GEOMETRY;
+  const height = Math.max(40, finite(spindleHeight, g.spindleHeight));
   const shoulder = { ...g.shoulder };
-  const wanted = { x: finite(target.x, 305), y: finite(target.y, 1090) - g.spindleHeight };
+  const wanted = { x: finite(target.x, 305), y: finite(target.y, 1090) - height };
   const lift = Math.max(0, finite(target.lift, 0));
   const wantedWorld = unprojectArmPoint(wanted);
   const dx = wantedWorld.x, dy = wantedWorld.y;
@@ -47,16 +48,17 @@ export function solveArm(target = {}) {
   const ux = distance > 1e-10 ? dx / distance : 1;
   const uy = distance > 1e-10 ? dy / distance : 0;
   const along = (g.upperLength ** 2 - g.forearmLength ** 2 + radius ** 2) / (2 * radius);
-  const height = Math.sqrt(Math.max(0, g.upperLength ** 2 - along ** 2));
+  const elbowHeight = Math.sqrt(Math.max(0, g.upperLength ** 2 - along ** 2));
   const world = {
     shoulder: { x: 0, y: 0 },
-    elbow: { x: ux * along + uy * height, y: uy * along - ux * height },
+    elbow: { x: ux * along + uy * elbowHeight, y: uy * along - ux * elbowHeight },
     wrist: { x: ux * radius, y: uy * radius },
   };
   const elbow = projectArmPoint(world.elbow);
   const wrist = projectArmPoint(world.wrist);
-  const tip = { x: wrist.x, y: wrist.y + g.spindleHeight - lift };
-  return { shoulder, elbow, wrist, tip, world, lift, reachable: distance >= min && distance <= max };
+  const tip = { x: wrist.x, y: wrist.y + height - lift };
+  return { shoulder, elbow, wrist, tip, world, lift, spindleHeight: height,
+    reachable: distance >= min && distance <= max };
 }
 
 const UPPER_PHOTO = Object.freeze({
@@ -176,10 +178,13 @@ function spindle(ctx, photograph, pose, vacuum) {
   const { wrist, tip } = pose;
   const x = wrist.x, y = wrist.y;
   const end = tip.y;
+  // Preserve the original 22px cup/rod clearance while shortening the wrist
+  // housing. The 108px compact option scales its photographed body to .53.
+  const factor = Math.max(.1, (pose.spindleHeight - 22) / (ARM_GEOMETRY.spindleHeight - 22));
   ctx.save();
   // The moving rod telescopes into the stationary wrist body. Its final black
   // cup always ends at the physical contact point returned by solveArm().
-  const rodTop = y + 105;
+  const rodTop = y + 105 * factor;
   const rodBottom = Math.max(rodTop, end - 10);
   ctx.fillStyle = metalGradient(ctx, x - 7, x + 7, rodTop);
   ctx.fillRect(x - 7, rodTop, 14, rodBottom - rodTop);
@@ -189,7 +194,9 @@ function spindle(ctx, photograph, pose, vacuum) {
   }
   // Preserve the real cylinder, black collar, fittings and hose texture.
   ctx.save();
-  ctx.translate(x - 319, y - 819);
+  ctx.translate(x, y);
+  ctx.scale(1, factor);
+  ctx.translate(-319, -819);
   polygon(ctx, [[302, 816], [335, 816], [337, 850], [334, 878],
     [333, 896], [333, 924], [328, 936], [305, 936], [300, 927],
     [301, 896], [304, 878], [302, 849]]);
@@ -218,7 +225,7 @@ function spindle(ctx, photograph, pose, vacuum) {
   ctx.stroke();
   if (vacuum) {
     ctx.beginPath();
-    ctx.arc(x + 7, y + 90, 1.1, 0, Math.PI * 2);
+    ctx.arc(x + 7, y + 90 * factor, 1.1, 0, Math.PI * 2);
     ctx.fillStyle = '#6c9b78';
     ctx.fill();
   }
@@ -226,8 +233,8 @@ function spindle(ctx, photograph, pose, vacuum) {
 }
 
 /** Draw only moving hardware; the caller owns the photograph and clean plate. */
-export function drawPickArm(ctx, referenceImage, armTarget, { vacuum = false } = {}) {
-  const pose = solveArm(armTarget);
+export function drawPickArm(ctx, referenceImage, armTarget, { vacuum = false, spindleHeight = 185 } = {}) {
+  const pose = solveArm(armTarget, { spindleHeight });
   ctx.save();
   try {
     hoses(ctx, pose);

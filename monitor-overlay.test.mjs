@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getMonitorOverlayData } from './monitor-overlay.js';
+import { drawMonitorOverlay, getMonitorOverlayData } from './monitor-overlay.js';
 import { getRasterSample, RASTER_ROWS } from './scan-path.js';
 
 const assessment = Object.freeze({ score: 77, comment: '轮廓清楚，构图集中，色彩层次出色。' });
@@ -16,7 +16,7 @@ test('scores are revealed only for the current rating and idle or tray exchange 
   const start = getMonitorOverlayData({ ...current, phase: 'rating', scoreProgress: 0 });
   const final = getMonitorOverlayData({ ...current, phase: 'rating' });
   assert.equal(start.displayScore, 0); assert.equal(final.displayScore, 77);
-  assert.equal(final.comment, '轮廓清楚');
+  assert.equal(final.comment, '随机积分已揭晓');
   assert.equal(getMonitorOverlayData({ ...current, phase: 'unloading', scoreProgress: 0 }).displayScore, 77);
   assert.equal(getMonitorOverlayData({ phase: 'rating', assessment: { score: 0 }, scoreProgress: 1 }).displayScore, 0);
   for (const phase of ['idle', 'tray-exchange', 'unknown']) {
@@ -27,6 +27,54 @@ test('scores are revealed only for the current rating and idle or tray exchange 
     assert.ok(!data.pillText.includes(current.nickname) && !data.pillText.includes('77'));
   }
   assert.equal(current.assessment.score, 77);
+});
+
+test('random challenge scores support zero through 100,000 with comma formatting', () => {
+  for (const score of [0, 100000]) {
+    const result = getMonitorOverlayData({ nickname: '观众', phase: 'rating', assessment: { score }, scoreProgress: 1 });
+    assert.equal(result.score, score); assert.equal(result.displayScore, score);
+    assert.equal(result.pillValue, `${score.toLocaleString('en-US')}分`);
+  }
+  const limit = getMonitorOverlayData({ phase: 'unloading', assessment: { score: 120000 } });
+  assert.equal(limit.displayScore, 100000); assert.equal(limit.scoreText, '100,000');
+  const low = getMonitorOverlayData({ phase: 'rating', assessment: { score: -1 }, scoreProgress: 1 });
+  assert.equal(low.displayScore, 0);
+  for (const score of [null, undefined, NaN, Infinity, '100000']) {
+    const missing = getMonitorOverlayData({ phase: 'rating', assessment: { score }, scoreProgress: 1 });
+    assert.equal(missing.score, null); assert.equal(missing.scoreText, null);
+  }
+});
+
+test('the full 100,000 result never leaks into scan or finishing, then counts up cubically', () => {
+  const options = { nickname: '随机挑战', assessment: { score: 100000 }, scoreProgress: 1 };
+  for (const phase of ['loading', 'engraving', 'finishing']) {
+    const data = getMonitorOverlayData({ ...options, phase, progress: 1 });
+    assert.equal(data.score, null); assert.equal(data.displayScore, null);
+    assert.equal(data.scoreText, null); assert.equal(data.comment, '');
+    assert.ok(!data.pillText.includes('100,000'));
+  }
+  const middle = getMonitorOverlayData({ ...options, phase: 'rating', scoreProgress: .5 });
+  assert.equal(middle.displayScore, 87500); assert.equal(middle.pillValue, '87,500分');
+});
+
+test('feed activity animates using the supplied time and freezes while paused', () => {
+  const bars = [];
+  const ctx = {
+    save() {}, restore() {}, scale() {}, beginPath() {}, rect() {}, clip() {},
+    moveTo() {}, lineTo() {}, stroke() {}, fillText() {}, roundRect() {}, fill() {}, arc() {},
+    measureText: value => ({ width: Array.from(String(value)).length * 12 }),
+    fillRect(x, y, width, height) { if (width === 7 && height === 4) bars.push([x, y]); },
+  };
+  const render = options => {
+    bars.length = 0;
+    drawMonitorOverlay(ctx, { phase: 'engraving', progress: .5, ...options });
+    return structuredClone(bars);
+  };
+  const running = render({ time: .5 });
+  assert.ok(running.length > 13);
+  assert.deepEqual(render({ time: 20, paused: true }), running);
+  assert.deepEqual(render({ time: 50, paused: true }), running);
+  assert.notDeepEqual(render({ time: 20, paused: false }), running);
 });
 
 test('completed scan rows follow real lane completion and pause preserves all sampled measurements', () => {

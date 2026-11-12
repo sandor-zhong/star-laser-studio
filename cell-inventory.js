@@ -11,12 +11,15 @@ export class CellInventory {
   #active = null;
   #belt = [null, null, null, null];
   #collector = [];
+  #exited = 0;
 
-  constructor(initialPortraits = [], capacity = 24, { initialAssessments = [] } = {}) {
+  constructor(initialPortraits = [], capacity = 24, { initialAssessments = [], outputMode = 'collector' } = {}) {
     if (!Number.isInteger(capacity) || capacity < 1) {
       throw new RangeError('Collector capacity must be a positive integer.');
     }
     this.capacity = capacity;
+    if (!['collector','through'].includes(outputMode)) throw new RangeError('Unknown output mode.');
+    this.outputMode = outputMode;
     this.#initialPortraits = initialPortraits.slice(0, 3);
     this.#initialAssessments = initialAssessments.slice(0, 3).map(copyAssessment);
     this.reset();
@@ -30,9 +33,10 @@ export class CellInventory {
   get active() { return this.#active; }
   get belt() { return [...this.#belt]; }
   get collector() { return [...this.#collector]; }
+  get exitedCount() { return this.#exited; }
 
   canStart() {
-    return this.#active === null && this.#collector.length < this.capacity;
+    return this.#active === null && (this.outputMode === 'through' || this.#collector.length < this.capacity);
   }
 
   begin(portrait, { assessment = null, nickname = '' } = {}) {
@@ -45,7 +49,10 @@ export class CellInventory {
     if (this.#active === null) return null;
     const placed = this.#active;
     const outgoing = this.#belt[3];
-    if (outgoing !== null) this.#collector.push(outgoing);
+    if (outgoing !== null) {
+      if (this.outputMode === 'through') this.#exited++;
+      else this.#collector.push(outgoing);
+    }
     this.#belt = [null, placed, this.#belt[1], this.#belt[2]];
     this.#active = null;
     return { collected: outgoing, outgoing, placed };
@@ -60,6 +67,7 @@ export class CellInventory {
   reset() {
     this.#active = null;
     this.#collector = [];
+    this.#exited = 0;
     this.#belt = [null, null, null, null];
     this.#initialPortraits.forEach((portrait, index) => {
       this.#belt[index + 1] = this.#record(portrait, 'demo', { assessment: this.#initialAssessments[index] });

@@ -1,0 +1,31 @@
+{
+  "room_id": "278339149230",
+  "synthetic": false,
+  "observed_seconds": 60.03,
+  "collector_status": "live",
+  "relay_status": "connected",
+  "actual_event_counts": {
+    "member": 13
+  },
+  "avatar_status_samples": {
+    "actual": 29
+  },
+  "studio_before": {
+    "events": 45,
+    "accepted": 43,
+    "completed": 7,
+    "skipped": 2,
+    "queue_dropped": 0
+  },
+  "studio_after": {
+    "events": 58,
+    "accepted": 56,
+    "completed": 12,
+    "skipped": 2,
+    "queue_dropped": 0
+  },
+  "completed_during_observation": 5,
+  "queue_length": 43,
+  "recent_actual_avatar_count": 12,
+  "real_gift_observed": false
+}

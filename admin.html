@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0b1518">
   <title>星光雕刻工坊 · 控制台</title>
   <link rel="stylesheet" href="/admin.css">
-  <script type="module" src="/admin.js"></script>
+  <script type="module" src="/admin.js?v=finished4"></script>
 </head>
 <body>
   <div class="admin-shell">
@@ -45,8 +45,8 @@
             </div>
             <div class="form-section">
               <div class="section-title"><h3>加工与镜头</h3></div>
-              <div class="field-grid"><label class="field"><span>加工速率</span><select name="speed"><option value="1">1.0× · 标准</option><option value="1.5">1.5×</option><option value="1.8">1.8× · 推荐</option><option value="2">2.0×</option><option value="2.5">2.5× · 快速</option></select></label><label class="field"><span>特写窗口显示</span><select name="closeup_mode"><option value="gifts">仅送礼观众</option><option value="all">所有观众</option><option value="off">关闭特写</option></select></label></div>
-              <p class="field-note">特写显示在固定直播画面的上方，加工与搬运过程保持连续。</p>
+              <div class="field-grid"><label class="field"><span>加工速率</span><select name="speed"><option value="1">1.0× · 标准</option><option value="1.5">1.5×</option><option value="1.8">1.8× · 推荐</option><option value="2">2.0×</option><option value="2.5">2.5× · 快速</option></select></label><label class="field"><span>加工位聚焦光效</span><select name="closeup_mode"><option value="gifts">仅送礼观众</option><option value="all">所有观众</option><option value="off">关闭聚焦光效</option></select></label></div>
+              <p class="field-note">聚焦光效突出当前加工的头像，保持固定整机画面和顶部排行榜。</p>
             </div>
           </fieldset>
           <div class="form-footer"><button id="discard-button" class="button button-subtle" type="button" disabled>还原已保存配置</button><button id="save-button" class="button button-primary" type="submit" disabled>保存配置</button></div>
@@ -59,7 +59,7 @@
           <div class="panel-heading"><div><p class="eyebrow">LIVE PRODUCTION</p><h2 id="production-title">当前加工</h2></div><span id="production-state" class="inline-tag">读取中</span></div>
           <div class="active-job"><div id="active-avatar" class="avatar avatar-large" aria-hidden="true">✦</div><div class="active-identity"><h3 id="active-name">等待工坊状态</h3><p id="active-description">连接后显示当前观众与加工阶段</p><p id="active-avatar-status" class="avatar-status" hidden></p></div><span id="active-kind" class="job-kind" hidden></span></div>
           <div class="progress-label"><span id="active-phase">—</span><span id="active-progress">—</span></div><div id="progress-track" class="progress-track" role="progressbar" aria-label="当前加工进度" aria-valuemin="0" aria-valuemax="100"><span id="progress-fill"></span></div>
-          <div class="command-bar"><button id="pause-button" class="button button-primary" type="button" disabled>暂停加工</button><button class="button button-subtle" data-command="tray_exchange" type="button" disabled>更换收料盘</button><button class="button button-subtle" data-command="reconnect" type="button" disabled>重新连接中继</button></div>
+          <div class="command-bar"><button id="pause-button" class="button button-primary" type="button" disabled>暂停加工</button><button class="button button-subtle" data-command="reconnect" type="button" disabled>重新连接中继</button></div>
           <div class="secondary-commands"><button class="text-button" data-command="clear_queue" type="button" disabled>清空等待队列</button><span>不会中断当前加工</span><button id="reset-button" class="text-button danger" type="button" disabled>重置工坊</button></div>
           <div id="reset-confirmation" class="confirmation" hidden><p>重置会结束当前加工并清空等待队列。确认重置？</p><div><button id="cancel-reset" class="button button-subtle" type="button">取消</button><button id="confirm-reset" class="button button-danger" type="button">确认重置</button></div></div>
           <p id="command-feedback" class="inline-feedback" role="status"></p>
@@ -74,15 +74,20 @@
 
         <section class="panel simulation-panel" aria-labelledby="simulation-title">
           <div class="panel-heading"><div><p class="eyebrow">LOCAL TEST</p><h2 id="simulation-title">本地链路测试</h2></div><span class="inline-tag">模拟事件</span></div>
-          <p class="section-description">测试入场打印和礼物特写，操作不会发送实际礼物。</p>
+          <p class="section-description">测试入场打印和礼物聚焦光效，操作不会发送实际礼物。</p>
           <form id="simulation-form"><label class="field"><span>测试观众昵称</span><input id="simulation-nickname" name="nickname" type="text" maxlength="40" placeholder="测试观众" value="测试观众"></label><div class="simulation-actions"><button class="button button-subtle" name="event" value="simulate_entry" type="submit" disabled>模拟观众入场</button><button class="button button-warm" name="event" value="simulate_gift" type="submit" disabled>模拟赠送礼物</button></div></form>
           <p id="simulation-feedback" class="inline-feedback" role="status"></p>
         </section>
       </div>
     </main>
 
+    <section class="panel live-events-panel" aria-labelledby="live-events-title">
+      <div class="panel-heading"><div><p class="eyebrow">LIVE INTERACTIONS</p><h2 id="live-events-title">近期直播事件</h2></div><span class="small-label">最近 100 条 · 仅本次运行</span></div>
+      <p class="section-description">查看弹幕、入场、礼物、关注与点赞。普通弹幕仅显示，入场和礼物按配置触发头像打印。</p>
+      <ol id="live-events-list" class="live-events-list"><li class="empty-state">等待直播间推送真实互动…</li></ol>
+    </section>
     <section class="history-grid">
-      <section class="panel" aria-labelledby="recent-title"><div class="panel-heading"><div><p class="eyebrow">FINISHED WORK</p><h2 id="recent-title">近期完成</h2></div><span class="small-label">头像成品评分</span></div><ul id="recent-list" class="recent-list"><li class="empty-state">暂无完成记录</li></ul></section>
+      <section class="panel" aria-labelledby="recent-title"><div class="panel-heading"><div><p class="eyebrow">FINISHED WORK</p><h2 id="recent-title">近期完成</h2></div><span class="small-label">随机作品分 0–100,000</span></div><ul id="recent-list" class="recent-list"><li class="empty-state">暂无完成记录</li></ul></section>
       <section class="panel log-panel" aria-labelledby="logs-title"><div class="panel-heading"><div><p class="eyebrow">EVENT LOG</p><h2 id="logs-title">运行日志</h2></div><span id="last-event" class="small-label">尚未收到事件</span></div><dl class="event-counters"><div><dt>收到事件</dt><dd id="events-count">—</dd></div><div><dt>进入队列</dt><dd id="accepted-count">—</dd></div><div><dt>已跳过</dt><dd id="skipped-count">—</dd></div><div><dt>队列已满</dt><dd id="dropped-count">—</dd></div></dl><ol id="logs-list" class="logs-list" aria-live="off"><li class="empty-state">连接后显示运行日志</li></ol></section>
     </section>
     <footer class="page-footer"><span>星光雕刻工坊 <span class="footer-separator">/</span> 本地控制台</span><span id="updated-at">等待首次同步</span></footer>

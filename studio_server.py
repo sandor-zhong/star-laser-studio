@@ -21,7 +21,7 @@ import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from studio_runtime import StudioRuntime, relay_url, safe_avatar_url
+from studio_runtime import StudioRuntime, relay_url, safe_avatar_url, LIVE_EVENT_TYPES
 
 
 ROOT = Path(__file__).resolve().parent
@@ -98,7 +98,7 @@ class StudioService:
             try:
                 async with self.relay_connect(relay_url(self.runtime.config), open_timeout=8,
                                                ping_interval=20, ping_timeout=20, max_size=64000) as connection:
-                    self.runtime.relay.update(status="connected", message="直播中继已连接，等待入场或礼物事件")
+                    self.runtime.relay.update(status="connected", message="直播中继已连接，等待弹幕、入场或礼物事件")
                     self.runtime.log("info", "已连接直播事件中继")
                     await self.broadcast()
                     delay = 1
@@ -109,7 +109,7 @@ class StudioService:
                             continue
                         if self.runtime.receive_event(event):
                             await self.broadcast()
-                        elif isinstance(event, dict) and event.get("type") in {"member", "gift"}:
+                        elif isinstance(event, dict) and event.get("type") in LIVE_EVENT_TYPES:
                             # Counter/last-event changes are still visible when a request was deduplicated.
                             await self.broadcast()
                 raise ConnectionError("relay closed")
@@ -368,8 +368,9 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "localhost", "::1"])
     parser.add_argument("--port", type=int, default=8082)
     parser.add_argument("--relay-project", default=os.environ.get("STUDIO_RELAY_PROJECT"))
+    parser.add_argument("--config-path", default=None, help="Optional local configuration path")
     args = parser.parse_args()
-    application = create_app(relay_project=args.relay_project)
+    application = create_app(relay_project=args.relay_project, config_path=args.config_path)
     # A relay consumer URL contains its token. Access/debug transport logs are deliberately disabled.
     uvicorn.run(application, host=args.host, port=args.port, access_log=False, log_level="warning")
 

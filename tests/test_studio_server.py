@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import httpx
@@ -98,6 +99,97 @@ class RuntimeTests(unittest.TestCase):
         r.receive_event(gift("active", "gift-active", group="active-group"))
         self.assertEqual(r.active["id"], active_id)
         self.assertTrue(r.active["is_gift"])
+
+    def test_random_score_is_assigned_once_per_job_and_preserved_for_gift_upgrade(self):
+        r = self.runtime
+        with patch("studio_runtime.secrets.randbelow", side_effect=[0, 100000]) as sampler:
+            self.assertTrue(r.receive_event(member("active", "first-entry")))
+            original = dict(r.active["assessment"])
+            self.assertEqual(original, {"score": 0, "label": "随机作品分", "mode": "random", "min": 0, "max": 100000})
+            self.assertTrue(r.receive_event(member("queued", "second-entry")))
+            self.assertEqual(r.queue[0]["assessment"]["score"], 100000)
+            self.assertTrue(r.receive_event(gift("queued", "queued-gift")))
+            self.assertTrue(r.receive_event(gift("active", "active-gift")))
+            self.assertEqual(r.active["assessment"], original)
+            self.assertEqual(r.queue[0]["assessment"]["score"], 100000)
+            self.assertFalse(r.receive_event(member("active", "duplicate-entry")))
+            self.assertEqual(sampler.call_count, 2)
+            self.assertEqual(sampler.call_args.args, (100001,))
+            # Snapshots and owner handoff do not reroll either score.
+            r.attach_display("mirror")
+            r.detach_display("owner")
+            self.assertEqual(r.snapshot()["active"]["assessment"], original)
+            self.assertEqual(sampler.call_count, 2)
+
+    def test_completion_cannot_replace_authoritative_score_with_client_fields(self):
+        r = self.runtime
+        with patch("studio_runtime.secrets.randbelow", return_value=96830) as sampler:
+            r.receive_event(member())
+            authoritative = dict(r.active["assessment"])
+            job_id = r.active["id"]
+            r.attach_display("mirror")
+            self.assertFalse(r.renderer_message("mirror", dict(type="complete", job_id=job_id,
+                assessment={"score": 100000})))
+            self.assertTrue(r.renderer_message("owner", dict(type="complete", job_id=job_id,
+                assessment={"score": -1, "clarity": 100, "label": "client injected"})))
+            self.assertEqual(r.recent[0]["assessment"], authoritative)
+            self.assertEqual(r.snapshot()["recent"][0]["assessment"], authoritative)
+            self.assertNotIn("clarity", r.recent[0]["assessment"])
+            self.assertEqual(sampler.call_count, 1)
+
+    def test_legacy_job_without_assessment_receives_one_score_for_all_followup_snapshots(self):
+        r = self.runtime
+        r.receive_event(member())
+        r.active.pop("assessment")
+        with patch("studio_runtime.secrets.randbelow", return_value=100000) as sampler:
+            first = r.snapshot()["active"]["assessment"]
+            self.assertEqual(first["score"], 100000)
+            self.assertEqual(r.snapshot()["active"]["assessment"], first)
+            self.assertTrue(r.renderer_message("owner", dict(type="complete", job_id=r.active["id"])))
+            self.assertEqual(r.recent[0]["assessment"], first)
+            self.assertEqual(sampler.call_count, 1)
+
+    def test_session_ranking_keeps_early_high_scores_beyond_recent_history(self):
+        r = self.runtime
+        with patch("studio_runtime.secrets.randbelow", side_effect=[100000, *range(34)]):
+            for index in range(35):
+                r.command("simulate_entry", f"作品 {index}")
+                job_id = r.active["id"]
+                if index == 0:
+                    first_id = job_id
+                self.assertTrue(r.renderer_message("owner", dict(type="complete", job_id=job_id)))
+        snapshot = r.snapshot()
+        self.assertEqual(len(snapshot["recent"]), 30)
+        self.assertNotIn(first_id, [job["id"] for job in snapshot["recent"]])
+        self.assertEqual(len(snapshot["ranking"]), 10)
+        self.assertEqual(snapshot["ranking"][0]["id"], first_id)
+        self.assertEqual([job["assessment"]["score"] for job in snapshot["ranking"]],
+                         [100000, *range(33, 24, -1)])
+        self.assertEqual(len({job["id"] for job in snapshot["ranking"]}), 10)
+        self.assertEqual(snapshot["ranking"][0]["nickname"], "作品 0")
+        self.assertIn("avatar_url", snapshot["ranking"][0])
+        # Resetting the physical machine keeps the current session's history.
+        r.command("reset")
+        self.assertEqual(r.snapshot()["ranking"], snapshot["ranking"])
+        snapshot["ranking"][0]["assessment"]["score"] = -1
+        self.assertEqual(r.ranking[0]["assessment"]["score"], 100000)
+
+    def test_session_ranking_keeps_zero_and_stable_completion_order_for_ties(self):
+        r = self.runtime
+        completed = []
+        with patch("studio_runtime.secrets.randbelow", side_effect=[0, 100000, 50000, 50000]):
+            for index in range(4):
+                r.command("simulate_entry", f"并列作品 {index}")
+                job_id = r.active["id"]
+                completed.append(job_id)
+                self.assertTrue(r.renderer_message("owner", dict(type="complete", job_id=job_id)))
+                self.assertFalse(r.renderer_message("owner", dict(type="complete", job_id=job_id)))
+        # The injected clock is equal for all completions; accepted completion
+        # order still gives a deterministic tie break with no duplicate IDs.
+        self.assertEqual([job["id"] for job in r.ranking],
+                         [completed[1], completed[2], completed[3], completed[0]])
+        self.assertEqual([job["assessment"]["score"] for job in r.ranking], [100000, 50000, 50000, 0])
+        self.assertEqual(r.counters["completed"], 4)
 
     def test_queue_limit_preserves_active_and_prioritizes_gift(self):
         r = self.runtime
@@ -308,6 +400,9 @@ class ServerTests(unittest.TestCase):
                     owner.receive_json()
                     state = client.post("/api/command", json={"action": "simulate_entry", "nickname": "真实入场流程"}).json()
                     job = state["active"]["id"]
+                    authoritative = state["active"]["assessment"]
+                    self.assertEqual(authoritative["mode"], "random")
+                    self.assertTrue(0 <= authoritative["score"] <= 100000)
                     owner.receive_json(); mirror.receive_json()
                     mirror.send_json(dict(type="complete", job_id=job, assessment={"score": 99}))
                     self.assertEqual(client.get("/api/state").json()["counters"]["completed"], 0)
@@ -320,10 +415,14 @@ class ServerTests(unittest.TestCase):
                     self.assertEqual(transferred["state"]["display"]["owner_id"], mirror_id)
                     self.assertNotEqual(mirror_id, owner_id)
                     self.assertEqual(transferred["state"]["active"]["id"], job)
+                    self.assertEqual(transferred["state"]["active"]["assessment"], authoritative)
                     mirror.send_json(dict(type="complete", job_id=job, assessment={"score": 94, "clarity": 91}, work_seconds=10))
                     completed = mirror.receive_json()["state"]
                     self.assertEqual(completed["counters"]["completed"], 1)
-                    self.assertEqual(completed["recent"][0]["assessment"]["clarity"], 91)
+                    self.assertEqual(completed["recent"][0]["assessment"], authoritative)
+                    self.assertNotIn("clarity", completed["recent"][0]["assessment"])
+                    self.assertEqual(completed["ranking"][0]["assessment"], authoritative)
+                    self.assertEqual(client.get("/api/state").json()["ranking"], completed["ranking"])
 
     def test_avatar_download_cache_redirect_and_limits(self):
         calls = []
@@ -420,6 +519,12 @@ class RelayIntegrationTests(unittest.TestCase):
                         self.assertEqual(upgraded["active"]["gift_name"], "小星星")
                         self.assertEqual(relay.path, "/prefix/events/123?token=consumer-secret")
                         self.assertNotIn("consumer-secret", json.dumps(upgraded))
+                        relay.send(dict(type='comment', room_id='123', msg_id='chat1',
+                                        user={'id':'chat-user','nickname':'弹幕测试观众'}, data={'content':'真实协议弹幕'}))
+                        chat = display.receive_json()['state']
+                        self.assertEqual(chat['live_events'][0]['content'], '真实协议弹幕')
+                        self.assertEqual(chat['active']['id'], job_id)
+                        self.assertEqual(chat['counters']['accepted'], upgraded['counters']['accepted'])
         finally:
             relay.close()
 

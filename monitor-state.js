@@ -24,8 +24,8 @@ export function getMonitorState(elapsed, active, { trayBusy = false, paused = fa
     phase, partId: active.id ?? null, partLocation: handling.partLocation,
     portraitVisible: workpieceVisible && progress > 0,
     workpieceVisible, progress,
-    score: t >= T.displayStart && Number.isFinite(assessmentScore) ? assessmentScore : null,
-    scoreProgress: clamp((t - T.displayStart) / 1.6),
+    score: t >= T.scanStart && Number.isFinite(assessmentScore) ? assessmentScore : null,
+    scoreProgress: progress,
     nickname: String(active.nickname ?? ''), paused: Boolean(paused),
   };
 }

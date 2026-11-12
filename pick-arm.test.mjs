@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { solveArm, drawPickArm, projectArmPoint, unprojectArmPoint, ARM_GEOMETRY as G } from './pick-arm.js';
 import { getHandlingState, HANDLING_TIMING as H } from './handling-cycle.js';
+import { feedPose, fixturePose, BELT_LOAD, PRODUCTION_LAYOUT } from './production-layout.js';
 
 const points = {
   source: { x: 239, y: 964 }, fixture: { x: 530, y: 891 },
@@ -109,4 +110,56 @@ test('drawing balances all Canvas saves and returns the same physical contact po
   const rendered = drawPickArm(ctx, {}, target, { vacuum: true });
   assert.equal(depth, 0);
   assert.deepEqual(rendered, solveArm(target));
+});
+
+test('the default spindle remains backward compatible and compact height controls its physical cup', () => {
+  for (const target of Object.values(points)) {
+    assert.deepEqual(solveArm(target), solveArm(target, { spindleHeight: 185 }));
+  }
+  const target = { ...feedPose(), lift: 40 };
+  const compact = solveArm(target, { spindleHeight: 108 });
+  assert.equal(compact.reachable, true);
+  assert.equal(compact.spindleHeight, 108);
+  near(compact.tip.x, target.x); near(compact.tip.y, target.y - target.lift);
+  near(compact.tip.y - compact.wrist.y + target.lift, 108);
+});
+
+test('compact spindle reaches all upright-cycle gripping contacts with rigid arms and no jumps', () => {
+  const fixture = fixturePose();
+  // The cup grips the lower face so the unchanged rigid links can reach the
+  // enlarged upright portrait while clearing the rear beam throughout travel.
+  const grip = { x: fixture.x, y: fixture.y + PRODUCTION_LAYOUT.fixtureGripOffset };
+  assert.ok((grip.y - fixture.y) / fixture.ry < 1);
+  const uprightPoints = { source: feedPose(), fixture: grip,
+    beltLoad: BELT_LOAD, park: PRODUCTION_LAYOUT.park };
+  let previous;
+  for (let t = 0; t <= H.total; t += .001) {
+    const target = getHandlingState(t, uprightPoints).armTarget;
+    const pose = solveArm(target, { spindleHeight: 108 });
+    assert.equal(pose.reachable, true, `unreachable compact grip at ${t}`);
+    near(pose.tip.x, target.x); near(pose.tip.y, target.y - target.lift);
+    near(length(pose.world.shoulder, pose.world.elbow), G.upperLength);
+    near(length(pose.world.elbow, pose.world.wrist), G.forearmLength);
+    assert.ok(pose.elbow.y > 655, `compact elbow intersects rear beam at ${t}`);
+    if (previous) assert.ok(length(previous, pose.elbow) < 3, `compact elbow flips at ${t}`);
+    previous = pose.elbow;
+  }
+});
+
+test('compact rendering shortens the photographed spindle body while the cup retains exact contact', () => {
+  let depth = 0;
+  const scales = [], gradient = { addColorStop() {} };
+  const ctx = { save() { depth++; }, restore() { depth--; assert.ok(depth >= 0); },
+    createLinearGradient() { return gradient; }, scale(x,y) { scales.push([x,y]); } };
+  for (const name of ['translate','rotate','beginPath','moveTo','lineTo','closePath',
+    'fill','stroke','clip','drawImage','ellipse','fillRect','bezierCurveTo',
+    'quadraticCurveTo','arc']) ctx[name] = (...args) => {
+      for (const arg of args) if (typeof arg === 'number') assert.ok(Number.isFinite(arg));
+    };
+  const target = { ...feedPose(), lift: 25 };
+  const rendered = drawPickArm(ctx, {}, target, { vacuum: true, spindleHeight: 108 });
+  assert.equal(depth, 0);
+  assert.ok(scales.some(([x,y]) => x === 1 && y > .5 && y < .55),
+    'compact body should keep photographed width and use about half its height');
+  near(rendered.tip.x,target.x); near(rendered.tip.y,target.y-target.lift);
 });

@@ -1,0 +1,36 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><base href="/"><title>三个指定头像·成品抓取实测</title>
+<style>body{margin:0;background:#071418;color:#e6fcff;font:13px sans-serif}#scene{height:100vh;display:grid;place-items:center}canvas{width:min(100vw,56.25vh);height:auto}nav{position:fixed;top:8px;left:8px;background:#102e3ce8;padding:10px;border-radius:8px}button{padding:9px;color:#fff;background:#165c6b;border:1px solid #75d7e5}#preview-video{width:240px}</style>
+<div id="scene"></div><nav><button id="record">录制三个头像</button><span id="status">正在加载原图</span></nav><div id="exports" hidden></div><output id="report" hidden></output>
+<script type="importmap">{"imports":{"/photo-scene.js":"/photo-scene.js?v=finished4","/challenge-scene.js":"/challenge-scene.js?v=finished4","/production-cycle.js":"/production-cycle.js?v=finished4","/production-layout.js":"/production-layout.js?v=finished4","/production-optics.js":"/production-optics.js?v=finished4","/challenge-hud.js":"/challenge-hud.js?v=finished4","/monitor-state.js":"/monitor-state.js?v=finished4","/cell-inventory.js":"/cell-inventory.js?v=finished4"}}</script>
+<script type="module">
+import{LaserScene}from'./photo-scene.js';
+import{PRODUCTION_TIMING as T}from'./production-cycle.js';
+import{advanceProductionTime}from'./production-speed.js';
+const images=await Promise.all([1,2,3].map(async n=>{const im=new Image();im.src=`/PREVIEW-input-avatar-${n}.jpg`;await im.decode();return im;}));
+const scene=new LaserScene(document.getElementById('scene'),{demoStock:false}),status=document.getElementById('status'),speed=1.8;
+const names=['头像1·花田双人','头像2·晚霞','头像3·草地插画'];
+function chunks(name,data){const root=document.getElementById('exports');root.querySelectorAll(`[data-export="${name}"]`).forEach(e=>e.remove());for(let i=0;i<data.length;i+=50000){const el=document.createElement('textarea');el.dataset.export=name;el.value=data.slice(i,i+50000);root.append(el);}}
+scene.prepare(images[0],{nickname:names[0]});scene.update(0,0);status.textContent='三个原始头像已加载';document.documentElement.dataset.ready='true';
+document.getElementById('record').onclick=()=>{
+ if(document.documentElement.dataset.recording==='true')return;
+ scene.reset();let index=0,elapsed=0,done=false,finalHold=0,previous=performance.now(),firstFrame=true;const jobs=[],errors=[],milestones=new Set();
+ function startJob(){if(!scene.prepare(images[index],{nickname:names[index]}))throw new Error('Cannot prepare avatar');jobs.push({avatar:index+1,score:scene.assessment.score,width:images[index].naturalWidth,height:images[index].naturalHeight});elapsed=0;}
+ startJob();scene.updateEngraving(0);scene.update(0,0);
+ const preferred=['video/webm;codecs=vp9','video/webm','video/mp4'];const mime=preferred.find(m=>MediaRecorder.isTypeSupported(m)),recordStart=performance.now();
+ const stream=scene.canvas.captureStream(0),track=stream.getVideoTracks()[0],parts=[];const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5000000});
+ recorder.ondataavailable=e=>{if(e.data.size)parts.push(e.data);};
+ recorder.onstop=()=>{const blob=new Blob(parts,{type:mime}),reader=new FileReader();reader.onload=()=>{chunks('video',reader.result);chunks('final-frame',scene.canvas.toDataURL('image/png'));const report={passed:errors.length===0,width:1080,height:1920,mime,bytes:blob.size,wallSeconds:(performance.now()-recordStart)/1000,speed,cycleSeconds:T.total/speed,armTransferSeconds:(T.handoffEnd-T.unclampEnd)/speed,jobs,errors,completed:index};document.getElementById('report').textContent=JSON.stringify(report);document.documentElement.dataset.recording='false';document.documentElement.dataset.complete='true';status.textContent='三个头像已完成，录屏可导出';stream.getTracks().forEach(t=>t.stop());};reader.readAsDataURL(blob);};
+ const workerUrl=URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),1000/30)'],{type:'text/javascript'})),worker=new Worker(workerUrl);
+ recorder.start();track.requestFrame();document.documentElement.dataset.recording='true';
+ worker.onmessage=()=>{
+  const now=performance.now(),dt=(now-previous)/1000;previous=now;
+  if(firstFrame){firstFrame=false;track.requestFrame();return;}
+  if(done){scene.update(dt,now/1000);track.requestFrame();finalHold+=dt;if(finalHold>=1.5){worker.terminate();URL.revokeObjectURL(workerUrl);recorder.stop();}return;}
+  elapsed=Math.min(T.total,advanceProductionTime(elapsed,dt,speed));scene.updateEngraving(elapsed);scene.update(dt,now/1000);track.requestFrame();
+  const d=scene.diagnostics();if(d.held==='blank'||d.phase.includes('source')||d.phase==='transfer-to-fixture')errors.push('出现取原料动作');
+  if(elapsed>=T.scanEnd){if(d.scoring.displayed!==jobs[index].score)errors.push('雕刻完成评分不同步');if(!milestones.has(index)){milestones.add(index);if(index===0)chunks('portrait-frame',scene.canvas.toDataURL('image/png'));}}
+  status.textContent=`正在加工 ${index+1}/3 · ${d.phase} · ${d.scoring.displayed??'准备'}`;
+  if(elapsed>=T.total){scene.complete();index++;if(index===3)done=true;else startJob();}
+ };
+};
+</script></html>

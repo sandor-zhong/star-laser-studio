@@ -16,6 +16,9 @@ __pycache__/
 .venv/
 venv/
 /.local/
+/vendor/dyhub/data/
+/vendor/dyhub/dist/
+signed_ws_url.txt
 
 # Local previews, recordings and visual checks
 /PREVIEW-*
